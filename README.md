@@ -1,72 +1,96 @@
 # trusted-rail
 
-Rust interfaces for rule evaluation and verifiable authorization. This framework
-does not implement an evaluator or a new policy language. Concrete implementation
-is deferred until the framework PR is reviewed.
+Deterministic Rego policy evaluation shared by native admission and a Ziren proof
+guest. The guest executes the complete pinned Regorus interpreter against the
+policy and request; its public output commits to the resulting decision. The
+witness cannot supply a precomputed decision.
 
-## Boundaries
+## Evaluation contract
 
-- `RuleEngine` evaluates an approved policy against an authenticated request.
-- `PolicyProofCodec` encodes the witness and decodes authenticated public values.
-  It does not verify cryptographic proofs.
-- `AuthorizationLedger` is a central gateway interface: atomic budget reservation,
-  current policy/context checks and single-use grant consumption.
-- `trusted-shim` calls these interfaces, mediates actual operations, submits to
-  the proof network and verifies receipts. The router handles service access.
+`RegorusEngine` implements `RuleEngine` and `PolicyProofCodec`, using Regorus
+0.15.0 with only `no_std` enabled. No extensions are installed. Randomness, time,
+HTTP, UUID and runtime-query builtins are unavailable. CI audits Cargo feature
+unification; downstream binaries must run the same audit. The approved guest ELF
+and verifying key also pin the actual compiled program, beyond its profile label.
 
-Policy ownership, version approval, revocation and cumulative authorization remain
-at the central gateway. Deploying an evaluator at each node does not give each node
-an independent budget. Database transactions should implement ledger atomicity.
+Policies use ordinary Rego v1 and return `data.trusted.decision`:
 
-Native evaluation and the proving guest must use the same evaluator version,
-capability profile, policy and canonical request encoding. The explicit timestamp
-is supplied as authenticated input. Unexpected evaluation errors fail closed.
-`approval_required` does not authorize execution. Policy decisions and physical
-execution outcomes are distinct claims.
+```rego
+package trusted
+import rego.v1
 
-## Reuse decision to validate
+default decision := {"decision": "deny", "reason_codes": ["not_permitted"]}
+decision := {"decision": "allow", "reason_codes": ["permitted"]} if {
+    input.operation == "read"
+    input.principal in data.readers
+}
+```
 
-First evaluate [Regorus](https://github.com/microsoft/regorus), the Rust Rego
-interpreter used by existing confidential-computing policy integrations. Reuse its
-parser/evaluator and upstream conformance tests. Do not write a parallel DSL or a
-simplified evaluator for proofs. [Cedar](https://github.com/cedar-policy/cedar) is an
-alternative if the needed authorization model is a better fit; no engine is pinned
-by this framework PR.
+The result must contain exactly `decision` (`allow`, `deny`, `approval_required`)
+and `reason_codes`. Undefined rules, evaluation errors and malformed outputs are
+errors, never allow. Approval requires a new authorization, not automatic dispatch.
+A fresh interpreter isolates each evaluation from prior requests.
 
-Regorus feature selection alone is not a determinism proof: its builtin registry
-includes `rand.intn`, and other profiles can enable time, HTTP or runtime queries.
-The implementation must enforce an explicit deterministic capability profile and
-prove native/guest equivalence for that profile. `no_std` support does not establish
-compatibility or acceptable proof cost on the selected ZK VM.
+`policy_digest` binds issuer, policy ID/version, engine profile, modules and data.
+The gateway computes and approves it before distribution. `request_digest` binds
+all execution, principal, action, resource, parameter, context and validity fields.
+Inputs use a versioned, sorted-object JSON encoding with integer JSON numbers;
+applications use strings for decimal amounts. This is not RFC 8785. Witnesses and
+public values must use this exact encoding; ambiguous re-encodings are rejected.
 
-OpenShell filesystem/process/network policies retain their upstream representation
-and enforcement. The central policy version can bind these and rail's business
-authorization policy; this framework proposes no automatic translation between
-policy languages and no OpenShell fork.
+This first profile evaluates an authorization-state snapshot and preserves its
+state root. It does not pretend to prove a ledger write. The central
+`AuthorizationLedger` must validate the proof, current policy/context/lease,
+reserve cumulative budgets atomically and consume an exact-request grant once.
+The retained optional proof argument must reject `None` on policy execution paths.
 
-## Reviewable contracts
+## What is proved
 
-`PolicyBundle` binds a `PolicyRef` to engine profile, modules and policy data.
-`EvaluationRequest` binds principal, action, parameters, context, execution and
-previous authorization state. `DecisionRecord` carries both state roots and the
-request commitments. Shared execution types come from `trusted-contracts` in
-`trusted-data-router`; the dependency is pinned to its framework commit.
+`guest/src/main.rs` reads the policy/request witness, calls `evaluate_witness`
+(which runs Regorus), and commits the complete `DecisionRecord` with a policy
+proof domain tag. Native admission computes the expected public bytes through the
+same implementation. trusted-shim submits the guest and witness to the proof
+network and verifies the receipt against these bytes and an approved program key.
+It never treats a completed job or a matching hash as a valid proof.
 
-All are proposed v0.1 interfaces. Structs do not themselves check signatures or
-canonicalization. The later implementation must authenticate input provenance,
-select canonical encoding, bind proof program/verifying key and enforce limits.
-Raw provider credentials must not be placed in witnesses. The remote proving
-operator receives the witness; zero knowledge alone does not hide it from them.
+Authenticated policy ownership, input provenance, wall-clock freshness, central
+budget concurrency and non-bypassable runtime enforcement remain separate
+obligations. A valid decision proof does not establish external effects. Witnesses
+are visible to the remote proving operator; do not put provider credentials in them.
+OpenShell's native isolation policies and enforcement retain their upstream form.
 
-## Next acceptance tests, after review
-
-Native allow/deny/error handling; action and policy substitution; deterministic
-native/guest results; two-node budget races; expiry, revocation and grant replay;
-real policy proof submission/verification through the proof network. No local ZK
-prover is started. These behavioral tests are not claimed by this framework.
+## Validation and artifacts
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+python3 scripts/check_engine_features.py
 ```
+
+Build with the Ziren MIPS toolchain (tested with `rustc +zkm` 1.94.0-dev):
+
+```sh
+export CARGO_TARGET_DIR=/absolute/path/outside-repository/build
+scripts/build_guest.sh
+cargo run --locked --manifest-path guest-check/Cargo.toml -- \
+  "$CARGO_TARGET_DIR/mipsel-zkm-zkvm-elf/release/trusted-rail-policy-guest" \
+  /absolute/path/outside-repository/artifacts
+```
+
+The checker executes the actual MIPS ELF and compares allow/deny public bytes
+with native evaluation. It optionally writes synthetic witnesses and a program
+manifest, deriving the verifying key through upstream static machine setup. It
+contains no network client or proof generator. The key-digest packing follows
+Ziren's `HashableKey` at the pinned revision; cryptographic primitives are reused.
+Keep the ELF, manifest, witnesses and proofs outside tracked files.
+
+Ziren guest, executor and verifier revisions must match the Fleet prover image.
+The real network acceptance test must register this ELF as its own Fleet proof app,
+start its prover through Fleet, then use that app's StageService endpoint. The
+Fleet control-plane URL is not itself a proof endpoint. The shim repository has
+the remote submission/verification example. Local tests are not a remote proof.
+
+This implementation builds on framework PR #1. Data-router transports, centralized
+ledger storage, ClawUp gateway wiring and concrete runtime enforcement follow in
+separate stacked PRs.

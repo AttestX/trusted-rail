@@ -1,8 +1,9 @@
 //! Deterministic rule-engine and authorization-ledger contracts.
 //!
-//! No evaluator, policy language, cryptography, storage or proof generator is
-//! implemented in this framework. Native and proving integrations must share
-//! the same pinned evaluator and enabled capabilities.
+//! Native and proving integrations share the same pinned Regorus evaluator.
+//! Proof generation and cryptographic verification belong to trusted-shim.
+
+pub mod rego;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -124,7 +125,8 @@ pub struct ExecutionGrant {
 pub trait AuthorizationLedger: Send + Sync {
     /// In one transaction: check policy/revocation/current roots, validate required
     /// proof evidence, reserve cumulative budget and issue a single-use grant.
-    /// An absent proof is permissible only when central policy explicitly permits it.
+    /// PolicyEngine execution requires a verified proof. The optional argument is
+    /// retained for source compatibility; implementations must reject None.
     async fn reserve(
         &self,
         decision: &DecisionRecord,
