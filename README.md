@@ -10,7 +10,9 @@ witness cannot supply a precomputed decision.
 `RegorusEngine` implements `RuleEngine` and `PolicyProofCodec`, using Regorus
 0.15.0 with only `no_std` enabled. No extensions are installed. Randomness, time,
 HTTP, UUID and runtime-query builtins are unavailable. CI audits Cargo feature
-unification; downstream binaries must run the same audit. The approved guest ELF
+unification for both Regorus and serde_json; downstream binaries must run the
+same audit. It rejects features such as `arbitrary_precision` and `preserve_order`
+and remains enforced under Python optimization. The approved guest ELF
 and verifying key also pin the actual compiled program, beyond its profile label.
 
 Policies use ordinary Rego v1 and return `data.trusted.decision`:
@@ -37,6 +39,9 @@ all execution, principal, action, resource, parameter, context and validity fiel
 Inputs use a versioned, sorted-object JSON encoding with integer JSON numbers;
 applications use strings for decimal amounts. This is not RFC 8785. Witnesses and
 public values must use this exact encoding; ambiguous re-encodings are rejected.
+The reserved object key `$serde_json::private::Number` is rejected at every depth
+in policy data and request inputs to prevent Regorus interpreting an object as
+a number.
 
 This first profile evaluates an authorization-state snapshot and preserves its
 state root. It does not pretend to prove a ledger write. The central
@@ -66,6 +71,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 python3 scripts/check_engine_features.py
+python3 -O -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Build with the Ziren MIPS toolchain (tested with `rustc +zkm` 1.94.0-dev):
@@ -80,10 +86,18 @@ cargo run --locked --manifest-path guest-check/Cargo.toml -- \
 
 The checker executes the actual MIPS ELF and compares allow/deny public bytes
 with native evaluation. It optionally writes synthetic witnesses and a program
-manifest, deriving the verifying key through upstream static machine setup. It
+manifest, deriving the verifying key through upstream static machine setup. An
+existing output manifest is invalidated before validation; the replacement is
+published atomically only after all comparisons pass. It
 contains no network client or proof generator. The key-digest packing follows
 Ziren's `HashableKey` at the pinned revision; cryptographic primitives are reused.
 Keep the ELF, manifest, witnesses and proofs outside tracked files.
+
+Migration remains blocked by Regorus 0.15.0's platform-dependent large-index
+conversions in `substring` and `array.slice`: native admission is 64-bit and the
+MIPS guest is 32-bit. The current differential smoke test does not establish
+equivalence for every policy. Restricting input integers alone would not cover
+large literals or computed indexes inside Rego policies.
 
 Ziren guest, executor and verifier revisions must match the Fleet prover image.
 The real network acceptance test must register this ELF as its own Fleet proof app,

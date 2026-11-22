@@ -41,7 +41,15 @@ pub fn canonical_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
         match value {
             Value::Number(n) if !n.is_i64() && !n.is_u64() => return Err(Error::InvalidInput),
             Value::Array(values) => values.iter().try_for_each(check)?,
-            Value::Object(values) => values.values().try_for_each(check)?,
+            Value::Object(values) => {
+                // Regorus treats this serde_json sentinel as a number, even
+                // though the committed JSON value is an object. Reject it at
+                // every depth so evaluation and commitment see the same type.
+                if values.contains_key("$serde_json::private::Number") {
+                    return Err(Error::InvalidInput);
+                }
+                values.values().try_for_each(check)?;
+            }
             _ => (),
         }
         Ok(())

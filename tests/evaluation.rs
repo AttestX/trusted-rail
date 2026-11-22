@@ -87,7 +87,11 @@ fn policy_content_profile_and_expiry_are_checked() {
         Decision::Deny
     );
     policy.engine.capabilities_sha256 = "0".repeat(64);
-    assert!(RegorusEngine.evaluate(&policy, &request).is_err());
+    policy.policy.sha256 = policy_digest(&policy).unwrap();
+    assert!(matches!(
+        RegorusEngine.evaluate(&policy, &request),
+        Err(Error::Unsupported)
+    ));
     let (policy, _) = fixture();
     request.evaluated_at_unix = request.validity.expires_at;
     assert!(RegorusEngine.evaluate(&policy, &request).is_err());
@@ -166,13 +170,68 @@ fn canonical_encoding_rejects_ambiguous_or_oversized_witnesses() {
 fn every_execution_and_request_field_is_bound() {
     let (policy, request) = fixture();
     let original = RegorusEngine.evaluate(&policy, &request).unwrap();
-    let mut values = serde_json::to_value(&request).unwrap();
-    values["execution"]["lease_id"] = json!("another-lease");
-    let changed: EvaluationRequest = serde_json::from_value(values).unwrap();
-    let different = RegorusEngine.evaluate(&policy, &changed).unwrap();
-    assert_ne!(original.request_sha256, different.request_sha256);
-    assert_ne!(
-        encode_public_values(&original).unwrap(),
-        encode_public_values(&different).unwrap()
-    );
+    for (path, replacement) in [
+        ("/execution/namespace", json!("other-tenant")),
+        ("/execution/workload", json!("other-agent")),
+        ("/execution/allocation_id", json!("a2")),
+        ("/execution/lease_id", json!("l2")),
+        ("/execution/generation", json!(2)),
+        ("/execution/node_id", json!("n2")),
+        ("/principal", json!("bob")),
+        ("/action_id", json!("request-2")),
+        ("/operation", json!("delete")),
+        ("/resource", json!("other-workspace")),
+        ("/parameters/bytes", json!(43)),
+        ("/context/remaining_bytes", json!(101)),
+        ("/previous_state_root", json!("1".repeat(64))),
+        ("/evaluated_at_unix", json!(101)),
+        ("/validity/not_before", json!(99)),
+        ("/validity/expires_at", json!(201)),
+    ] {
+        let mut values = serde_json::to_value(&request).unwrap();
+        *values.pointer_mut(path).unwrap() = replacement;
+        let changed: EvaluationRequest = serde_json::from_value(values).unwrap();
+        let different = RegorusEngine.evaluate(&policy, &changed).unwrap();
+        assert_ne!(original.request_sha256, different.request_sha256, "{path}");
+        assert_ne!(
+            encode_public_values(&original).unwrap(),
+            encode_public_values(&different).unwrap(),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn reserved_json_number_objects_are_rejected_before_evaluation() {
+    for text in ["1", "1.5", "1e3", "-0"] {
+        let magic = json!({"$serde_json::private::Number": text});
+        for value in [
+            magic.clone(),
+            json!([{"nested":magic.clone()}]),
+            json!({"$serde_json::private::Number":text,"other":true}),
+        ] {
+            assert!(matches!(canonical_bytes(&value), Err(Error::InvalidInput)));
+        }
+        let (policy, request) = fixture();
+        for field in ["parameters", "context"] {
+            let mut value = serde_json::to_value(&request).unwrap();
+            value[field] = json!({"nested":[magic.clone()]});
+            let changed: EvaluationRequest = serde_json::from_value(value).unwrap();
+            assert!(matches!(
+                RegorusEngine.evaluate(&policy, &changed),
+                Err(Error::InvalidInput)
+            ));
+            assert!(RegorusEngine.encode_witness(&policy, &changed).is_err());
+            // Also exercise a manually encoded witness, bypassing the host codec.
+            let raw = serde_json::to_vec(&json!({"domain":"trusted-rail.policy-witness.v1","policy":policy,"request":changed})).unwrap();
+            assert!(matches!(evaluate_witness(&raw), Err(Error::InvalidInput)));
+        }
+        let mut policy = policy;
+        policy.data = json!({"nested":[magic]});
+        assert!(matches!(policy_digest(&policy), Err(Error::InvalidInput)));
+        assert!(matches!(
+            RegorusEngine.evaluate(&policy, &request),
+            Err(Error::InvalidInput)
+        ));
+    }
 }
