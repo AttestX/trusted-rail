@@ -1,57 +1,30 @@
 use serde_json::json;
-use trusted_contracts::{ExecutionIdentity, PolicyRef, Validity};
 use trusted_rail::{rego::*, *};
 
-fn fixture() -> (PolicyBundle, EvaluationRequest) {
-    let mut policy = PolicyBundle {
-        policy: PolicyRef {
-            issuer: "gateway".into(),
-            policy_id: "tools".into(),
-            version: 1,
-            sha256: String::new(),
-        },
-        engine: engine_profile(),
-        modules: [(
-            "tools.rego".into(),
-            r#"
-package trusted
-import rego.v1
-default decision := {"decision": "deny", "reason_codes": ["not_permitted"]}
-decision := {"decision": "allow", "reason_codes": ["permitted"]} if {
-    input.operation == "read"
-    input.principal in data.readers
-    input.parameters.bytes <= input.context.remaining_bytes
-}
-"#
-            .into(),
-        )]
-        .into(),
-        data: json!({"readers":["alice"]}),
-    };
-    policy.policy.sha256 = policy_digest(&policy).unwrap();
-    let request = EvaluationRequest {
-        execution: ExecutionIdentity {
-            namespace: "clawup".into(),
-            workload: "agent".into(),
-            allocation_id: "a1".into(),
-            lease_id: "l1".into(),
-            generation: 1,
-            node_id: "n1".into(),
-        },
-        principal: "alice".into(),
-        action_id: "request-1".into(),
-        operation: "read".into(),
-        resource: "workspace".into(),
-        parameters: json!({"bytes":42}),
-        context: json!({"remaining_bytes":100}),
-        previous_state_root: "0".repeat(64),
-        evaluated_at_unix: 100,
-        validity: Validity {
-            not_before: 100,
-            expires_at: 200,
-        },
-    };
-    (policy, request)
+mod support;
+use support::fixture;
+
+#[test]
+fn differential_corpus_matches_expected_native_decisions() {
+    for case in support::differential_cases() {
+        let native = RegorusEngine.evaluate(&case.policy, &case.request);
+        match case.expected {
+            Some(expected) => {
+                let native = native.unwrap_or_else(|error| panic!("{}: {error}", case.name));
+                assert_eq!(native.decision, expected, "{}", case.name);
+                assert_eq!(
+                    evaluate_witness(&case.witness()).unwrap(),
+                    encode_public_values(&native).unwrap(),
+                    "{}",
+                    case.name
+                );
+            }
+            None => {
+                assert!(native.is_err(), "{}", case.name);
+                assert!(evaluate_witness(&case.witness()).is_err(), "{}", case.name);
+            }
+        }
+    }
 }
 
 #[test]
@@ -160,6 +133,10 @@ fn canonical_encoding_rejects_ambiguous_or_oversized_witnesses() {
             .unwrap();
     assert!(evaluate_witness(&pretty).is_err());
     assert!(canonical_bytes(&json!({"amount":1.5})).is_err());
+    // unbounded_depth only exposes an opt-out API; the codec must retain the
+    // default parser limit even when another workspace member enables it.
+    let nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+    assert!(serde_json::from_str::<serde_json::Value>(&nested).is_err());
     assert_eq!(
         canonical_bytes(&json!({"z":1,"a":{"b":2,"a":3}})).unwrap(),
         b"{\"a\":{\"a\":3,\"b\":2},\"z\":1}"

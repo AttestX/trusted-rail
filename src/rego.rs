@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_WITNESS_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PUBLIC_BYTES: usize = 64 * 1024;
-const PROFILE: &str = "trusted-rail.regorus.v1;regorus=0.15.0;features=no_std;rego=v1;entry=data.trusted.decision;strict=true;json=sorted-integer-v1;state=read-only";
+const PROFILE: &str = "trusted-rail.regorus.v2;regorus=0.15.0;patch=portable-indices-v1;features=no_std;rego=v1;entry=data.trusted.decision;strict=true;json=sorted-integer-v1;state=read-only";
 
 #[derive(Clone, Copy, Default)]
 pub struct RegorusEngine;

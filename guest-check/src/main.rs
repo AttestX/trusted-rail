@@ -3,7 +3,10 @@
 use p3_field::PrimeField32;
 use sha2::{Digest, Sha256};
 use trusted_rail::{rego::*, *};
-use zkm_core_executor::{Executor, Program};
+use zkm_core_executor::{ExecutionError, Executor, Program};
+
+#[path = "../../tests/support/mod.rs"]
+mod cases;
 
 fn main() {
     let path = std::env::args_os()
@@ -21,32 +24,53 @@ fn main() {
         }
     }
     let elf = std::fs::read(path).expect("read ELF");
-    for operation in ["read", "delete"] {
-        let mut policy:PolicyBundle=serde_json::from_value(serde_json::json!({
-            "policy":{"issuer":"gateway","policy_id":"tools","version":1,"sha256":""},
-            "engine":engine_profile(),"data":{},"modules":{"p.rego":"package trusted\nimport rego.v1\ndefault decision := {\"decision\":\"deny\",\"reason_codes\":[]}\ndecision := {\"decision\":\"allow\",\"reason_codes\":[]} if { input.operation == \"read\" }"}
-        })).unwrap();
-        policy.policy.sha256 = policy_digest(&policy).unwrap();
-        let request:EvaluationRequest=serde_json::from_value(serde_json::json!({
-            "execution":{"namespace":"tenant","workload":"agent","allocation_id":"a","lease_id":"l","generation":1,"node_id":"n"},
-            "principal":"alice","action_id":"action","operation":operation,"resource":"workspace","parameters":{},"context":{},"previous_state_root":"0".repeat(64),"evaluated_at_unix":100,"validity":{"not_before":100,"expires_at":200}
-        })).unwrap();
-        let witness = RegorusEngine.encode_witness(&policy, &request).unwrap();
-        let native = evaluate_witness(&witness).unwrap();
+    for case in cases::differential_cases() {
+        let witness = case.witness();
+        let native = evaluate_witness(&witness);
+        match case.expected {
+            Some(expected) => assert_eq!(
+                RegorusEngine
+                    .decode_public_values(native.as_ref().expect(case.name))
+                    .unwrap()
+                    .decision,
+                expected,
+                "{}",
+                case.name
+            ),
+            None => assert!(native.is_err(), "{} must be rejected natively", case.name),
+        }
         if let Some(dir) = &output {
-            std::fs::write(dir.join(format!("{operation}.witness.json")), &witness).unwrap();
+            std::fs::write(dir.join(format!("{}.witness.json", case.name)), &witness).unwrap();
         }
         let mut executor = Executor::new(Program::from(&elf).unwrap(), Default::default());
         executor.max_cycles = Some(100_000_000);
         executor.state.input_stream.push(witness);
-        executor.run_fast().expect("MIPS guest execution");
-        assert_eq!(
-            executor.state.public_values_stream, native,
-            "native/MIPS output differs for {operation}"
-        );
+        let execution = executor.run_fast();
+        match native {
+            Ok(expected) => {
+                execution.expect(case.name);
+                assert_eq!(
+                    executor.state.public_values_stream, expected,
+                    "native/MIPS output differs for {}",
+                    case.name
+                );
+            }
+            Err(_) => {
+                assert!(
+                    matches!(execution, Err(ExecutionError::HaltWithNonZeroExitCode(1))),
+                    "{}: expected guest rejection, got {execution:?}",
+                    case.name
+                );
+                assert!(
+                    executor.state.public_values_stream.is_empty(),
+                    "{}: rejected guest must not publish a decision",
+                    case.name
+                );
+            }
+        }
         println!(
-            "{operation}: native/MIPS output identical ({} cycles)",
-            executor.state.global_clk
+            "{}: native/MIPS agreement ({} cycles)",
+            case.name, executor.state.global_clk
         );
     }
     // Publish only after every native/MIPS comparison has succeeded.

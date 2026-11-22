@@ -8,11 +8,14 @@ witness cannot supply a precomputed decision.
 ## Evaluation contract
 
 `RegorusEngine` implements `RuleEngine` and `PolicyProofCodec`, using Regorus
-0.15.0 with only `no_std` enabled. No extensions are installed. Randomness, time,
+0.15.0 with a [minimal portability patch](https://github.com/attestx/regorus/pull/1)
+and only `no_std` enabled. No extensions are installed. Randomness, time,
 HTTP, UUID and runtime-query builtins are unavailable. CI audits Cargo feature
 unification for both Regorus and serde_json; downstream binaries must run the
-same audit. It rejects features such as `arbitrary_precision` and `preserve_order`
-and remains enforced under Python optimization. The approved guest ELF
+same audit. It checks the exact patched source and rejects unapproved features
+such as `arbitrary_precision`, even under Python optimization. Fleet's
+`preserve_order` and `unbounded_depth` features are tested explicitly: the codec
+sorts every object and retains the default parser depth limit. The approved guest ELF
 and verifying key also pin the actual compiled program, beyond its profile label.
 
 Policies use ordinary Rego v1 and return `data.trusted.decision`:
@@ -70,6 +73,7 @@ OpenShell's native isolation policies and enforcement retain their upstream form
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo test --locked --features serde_json/preserve_order,serde_json/unbounded_depth
 python3 scripts/check_engine_features.py
 python3 -O -m unittest discover -s tests -p 'test_*.py'
 ```
@@ -84,8 +88,10 @@ cargo run --locked --manifest-path guest-check/Cargo.toml -- \
   /absolute/path/outside-repository/artifacts
 ```
 
-The checker executes the actual MIPS ELF and compares allow/deny public bytes
-with native evaluation. It optionally writes synthetic witnesses and a program
+The checker executes 23 shared native/MIPS cases: allow, deny, approval, policy
+data, arithmetic, Unicode, large and computed indexes, and rejected inputs.
+It compares complete public bytes and requires rejected guests to exit without
+a decision. It optionally writes synthetic witnesses and a program
 manifest, deriving the verifying key through upstream static machine setup. An
 existing output manifest is invalidated before validation; the replacement is
 published atomically only after all comparisons pass. It
@@ -93,11 +99,13 @@ contains no network client or proof generator. The key-digest packing follows
 Ziren's `HashableKey` at the pinned revision; cryptographic primitives are reused.
 Keep the ELF, manifest, witnesses and proofs outside tracked files.
 
-Migration remains blocked by Regorus 0.15.0's platform-dependent large-index
-conversions in `substring` and `array.slice`: native admission is 64-bit and the
-MIPS guest is 32-bit. The current differential smoke test does not establish
-equivalence for every policy. Restricting input integers alone would not cover
-large literals or computed indexes inside Rego policies.
+The v2 engine profile uses checked collection-index conversions in Regorus;
+large input indexes and indexes computed inside policies have matching 32/64-bit
+semantics. Older profiles are rejected. Upgrade the native evaluator, guest ELF,
+approved program key and policy revisions together; recompute and approve policy
+digests for the new profile. Existing receipts cannot be relabeled as v2 receipts.
+Differential tests cover regressions, not equivalence of every possible policy.
+Native resource limits and authorization freshness remain separate review items.
 
 Ziren guest, executor and verifier revisions must match the Fleet prover image.
 The real network acceptance test must register this ELF as its own Fleet proof app,
