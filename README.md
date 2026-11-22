@@ -91,6 +91,10 @@ start its prover through Fleet, then use that app's StageService endpoint. The
 Fleet control-plane URL is not itself a proof endpoint. The shim repository has
 the remote submission/verification example. Local tests are not a remote proof.
 
-This implementation builds on framework PR #1. Data-router transports, centralized
-ledger storage, ClawUp gateway wiring and concrete runtime enforcement follow in
-separate stacked PRs.
+Rail is a library and proof guest, not an independently deployed server. Fleet
+and shim use it for strict startup admission and preflight action decisions;
+preflight receipts are generated asynchronously by the proof network. Build the
+guest as an immutable ELF/manifest artifact for the remote worker image. Runtime
+images are published by Fleet/shim; there is no Rail daemon image. TEE attestation
+verification is a separate proof program. See [shim](https://github.com/attestx/trusted-shim)
+and [Fleet](https://github.com/ProjectZKM/zkm-fleet) for orchestration.
