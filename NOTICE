@@ -1,0 +1,6 @@
+guest-check/src/main.rs adapts the program-key digest packing from
+ProjectZKM/Ziren at c9988a098d92bc55a85ca9307c470d1f97be3337:
+crates/prover/src/types.rs (HashableKey) and crates/primitives/src/lib.rs
+(koalabears_to_bn254). Cryptographic hashing uses the upstream implementation.
+Ziren is licensed under MIT and Apache-2.0.
+https://github.com/ProjectZKM/Ziren/tree/c9988a098d92bc55a85ca9307c470d1f97be3337
