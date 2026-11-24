@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 pub const MAX_WITNESS_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PUBLIC_BYTES: usize = 64 * 1024;
 pub const MAX_STATE_BYTES: usize = 32 * 1024;
+pub const MAX_BATCH: usize = 256;
+const WITNESS: &str = "trusted-rail.policy-witness.v1";
+const BATCH_WITNESS: &str = "trusted-rail.batch-witness.v1";
+const BATCH_RESULT: &str = "trusted-rail.batch-result.v1";
 const PROFILE: &str = "trusted-rail.regorus.v3;regorus=0.15.0;patch=portable-indices-v1;features=no_std;rego=v1;entry=data.trusted.decision;strict=true;json=sorted-integer-v1;state=transition-v1";
 
 #[derive(Clone, Copy, Default)]
@@ -24,6 +28,27 @@ struct Witness {
 struct PublicValues {
     domain: String,
     record: DecisionRecord,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchWitness {
+    domain: String,
+    policy: PolicyBundle,
+    requests: Vec<EvaluationRequest>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchPublicValues {
+    domain: String,
+    record: BatchRecord,
+}
+
+/// Only the tag that says which witness this is.
+#[derive(Deserialize)]
+struct Tagged {
+    domain: String,
 }
 
 #[derive(Deserialize)]
@@ -249,7 +274,7 @@ impl PolicyProofCodec for RegorusEngine {
         request: &EvaluationRequest,
     ) -> Result<Vec<u8>> {
         let bytes = canonical_bytes(&Witness {
-            domain: "trusted-rail.policy-witness.v1".into(),
+            domain: WITNESS.into(),
             policy: policy.clone(),
             request: request.clone(),
         })?;
@@ -282,15 +307,119 @@ pub fn encode_public_values(record: &DecisionRecord) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Guest entry: parse the actual policy/request, execute Regorus, commit result.
-/// A valid proof of this program proves evaluation, not just hash computation.
+/// Guest entry: parse the actual policy and request or requests, execute
+/// Regorus, commit the result. A valid proof of this program proves evaluation,
+/// not just hash computation. The public values' domain tag says which of the
+/// two results was proved.
 pub fn evaluate_witness(bytes: &[u8]) -> Result<Vec<u8>> {
     if bytes.len() > MAX_WITNESS_BYTES {
         return Err(Error::InvalidInput);
     }
+    let tagged: Tagged = serde_json::from_slice(bytes).map_err(|_| Error::InvalidInput)?;
+    if tagged.domain == BATCH_WITNESS {
+        let witness: BatchWitness =
+            serde_json::from_slice(bytes).map_err(|_| Error::InvalidInput)?;
+        if canonical_bytes(&witness)? != bytes {
+            return Err(Error::InvalidInput);
+        }
+        let records = evaluate_batch(&witness.policy, &witness.requests)?;
+        return encode_batch_public_values(&batch_record(&records)?);
+    }
     let witness: Witness = serde_json::from_slice(bytes).map_err(|_| Error::InvalidInput)?;
-    if witness.domain != "trusted-rail.policy-witness.v1" || canonical_bytes(&witness)? != bytes {
+    if witness.domain != WITNESS || canonical_bytes(&witness)? != bytes {
         return Err(Error::InvalidInput);
     }
     encode_public_values(&RegorusEngine.evaluate(&witness.policy, &witness.request)?)
+}
+
+pub fn record_digest(record: &DecisionRecord) -> Result<String> {
+    commitment("trusted-rail.record.v1", record)
+}
+
+/// Evaluate a run of requests in order. Any request that cannot be evaluated
+/// fails the whole run: a batch proof never skips a decision.
+pub fn evaluate_batch(
+    policy: &PolicyBundle,
+    requests: &[EvaluationRequest],
+) -> Result<Vec<DecisionRecord>> {
+    if requests.is_empty()
+        || requests.len() > MAX_BATCH
+        || requests
+            .windows(2)
+            .any(|pair| pair[1].evaluated_at_unix < pair[0].evaluated_at_unix)
+    {
+        return Err(Error::InvalidInput);
+    }
+    requests
+        .iter()
+        .map(|request| RegorusEngine.evaluate(policy, request))
+        .collect()
+}
+
+/// Summarize records that form one unbroken run: the same execution, policy and
+/// engine, each starting at the root the one before it ended on. A dropped,
+/// added or reordered record changes the result or is refused here.
+pub fn batch_record(records: &[DecisionRecord]) -> Result<BatchRecord> {
+    let (first, last) = match (records.first(), records.last()) {
+        (Some(first), Some(last)) if records.len() <= MAX_BATCH => (first, last),
+        _ => return Err(Error::InvalidInput),
+    };
+    if records.iter().any(|record| {
+        record.execution != first.execution
+            || record.policy != first.policy
+            || record.engine != first.engine
+    }) || records
+        .windows(2)
+        .any(|pair| pair[1].previous_state_root != pair[0].next_state_root)
+    {
+        return Err(Error::InvalidInput);
+    }
+    let digests = records
+        .iter()
+        .map(record_digest)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(BatchRecord {
+        execution: first.execution.clone(),
+        policy: first.policy.clone(),
+        engine: first.engine.clone(),
+        count: u32::try_from(records.len()).map_err(|_| Error::InvalidInput)?,
+        previous_state_root: first.previous_state_root.clone(),
+        next_state_root: last.next_state_root.clone(),
+        records_sha256: commitment("trusted-rail.batch.v1", &digests)?,
+    })
+}
+
+pub fn encode_batch_witness(
+    policy: &PolicyBundle,
+    requests: &[EvaluationRequest],
+) -> Result<Vec<u8>> {
+    let bytes = canonical_bytes(&BatchWitness {
+        domain: BATCH_WITNESS.into(),
+        policy: policy.clone(),
+        requests: requests.to_vec(),
+    })?;
+    if bytes.len() > MAX_WITNESS_BYTES {
+        return Err(Error::InvalidInput);
+    }
+    Ok(bytes)
+}
+
+pub fn encode_batch_public_values(record: &BatchRecord) -> Result<Vec<u8>> {
+    canonical_bytes(&BatchPublicValues {
+        domain: BATCH_RESULT.into(),
+        record: record.clone(),
+    })
+}
+
+/// Only serialization. Decoding public values does not verify a proof.
+pub fn decode_batch_public_values(bytes: &[u8]) -> Result<BatchRecord> {
+    if bytes.len() > MAX_PUBLIC_BYTES {
+        return Err(Error::InvalidInput);
+    }
+    let values: BatchPublicValues =
+        serde_json::from_slice(bytes).map_err(|_| Error::InvalidInput)?;
+    if values.domain != BATCH_RESULT || canonical_bytes(&values)? != bytes {
+        return Err(Error::InvalidInput);
+    }
+    Ok(values.record)
 }

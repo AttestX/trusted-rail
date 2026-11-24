@@ -88,6 +88,15 @@ same implementation. trusted-shim submits the guest and witness to the proof
 network and verifies the receipt against these bytes and an approved program key.
 It never treats a completed job or a matching hash as a valid proof.
 
+The same guest also proves a run of decisions in one proof. Given a batch witness
+(`encode_batch_witness`: one policy and up to 256 requests in order) it evaluates
+every request, checks that each starts at the root the one before it ended on, and
+commits a `BatchRecord`: the execution, policy and engine, the count, the first and
+last state roots, and a digest over the records. A verifier that holds the records
+recomputes that digest with `batch_record`. A request that cannot be evaluated
+fails the whole run, so a batch proof never skips a decision. The public values'
+domain tag says whether one decision or a run was proved.
+
 Authenticated policy ownership, input provenance, wall-clock freshness, central
 budget concurrency and non-bypassable runtime enforcement remain separate
 obligations. A valid decision proof does not establish external effects. Witnesses
