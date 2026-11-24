@@ -52,6 +52,22 @@ state root. It does not pretend to prove a ledger write. The central
 reserve cumulative budgets atomically and consume an exact-request grant once.
 The retained optional proof argument must reject `None` on policy execution paths.
 
+## Actions
+
+Enforcers describe what they observed with one vocabulary (`src/action.rs`), so a
+policy can judge requests from any of them:
+
+| Operation | Resource | Parameters |
+|---|---|---|
+| `runtime.create` | set by the launcher | the launch and sandbox policy digests |
+| `network.connect` | `tcp://host:port` | `host`, `port`, `binary` |
+| `http.request` | `scheme://host:port/path` | `method`, `scheme`, `host`, `port`, `path`, `query`, `binary`, `body_bytes`, `body_sha256`, and `body` |
+
+`body` is present only when the body is JSON of at most 32 KiB. A number that is
+not an integer is carried as its decimal text (`0.5` becomes `"0.5"`); compare it
+with `to_number`. A policy that needs the body's fields must deny a request
+without `body`, or an oversized or malformed body would pass unread.
+
 ## What is proved
 
 `guest/src/main.rs` reads the policy/request witness, calls `evaluate_witness`
