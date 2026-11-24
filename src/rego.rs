@@ -92,7 +92,7 @@ pub fn request_digest(request: &EvaluationRequest) -> Result<String> {
     commitment("trusted-rail.request.v1", request)
 }
 
-fn valid_text(value: &str) -> bool {
+pub(crate) fn valid_text(value: &str) -> bool {
     !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }
 

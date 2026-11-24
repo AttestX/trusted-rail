@@ -3,6 +3,7 @@
 //! Native and proving integrations share the same pinned Regorus evaluator.
 //! Proof generation and cryptographic verification belong to trusted-shim.
 
+pub mod action;
 pub mod rego;
 
 use async_trait::async_trait;
