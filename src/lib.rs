@@ -102,6 +102,22 @@ pub struct DecisionRecord {
     pub validity: Validity,
 }
 
+/// Public output of one proof over a run of decisions for one execution under
+/// one policy. A verifier that holds the records recomputes `records_sha256`
+/// (`rego::batch_record`); the roots place the run in the execution's chain.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchRecord {
+    pub execution: ExecutionIdentity,
+    pub policy: PolicyRef,
+    pub engine: EngineProfile,
+    pub count: u32,
+    /// Where the first record starts and the last one ends.
+    pub previous_state_root: String,
+    pub next_state_root: String,
+    pub records_sha256: String,
+}
+
 /// No network, wall-clock reads or randomness. State changes only as the policy's
 /// own `next_state`, committed in the record's `next_state_root`.
 /// Implementations reuse an upstream engine and reject unsupported policies.
