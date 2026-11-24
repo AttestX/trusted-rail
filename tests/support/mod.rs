@@ -36,6 +36,7 @@ decision := {"decision": "allow", "reason_codes": ["permitted"]} if {
         parameters: json!({"bytes":42}),
         context: json!({"remaining_bytes":100}),
         previous_state_root: "0".repeat(64),
+        state: None,
         evaluated_at_unix: 100,
         validity: serde_json::from_value(json!({"not_before":100,"expires_at":200})).unwrap(),
     };

@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_WITNESS_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PUBLIC_BYTES: usize = 64 * 1024;
-const PROFILE: &str = "trusted-rail.regorus.v2;regorus=0.15.0;patch=portable-indices-v1;features=no_std;rego=v1;entry=data.trusted.decision;strict=true;json=sorted-integer-v1;state=read-only";
+pub const MAX_STATE_BYTES: usize = 32 * 1024;
+const PROFILE: &str = "trusted-rail.regorus.v3;regorus=0.15.0;patch=portable-indices-v1;features=no_std;rego=v1;entry=data.trusted.decision;strict=true;json=sorted-integer-v1;state=transition-v1";
 
 #[derive(Clone, Copy, Default)]
 pub struct RegorusEngine;
@@ -30,6 +31,16 @@ struct PublicValues {
 struct RuleOutput {
     decision: Decision,
     reason_codes: Vec<String>,
+    #[serde(default)]
+    next_state: Option<Value>,
+}
+
+/// A decision and the state it leaves behind. The record commits only to the
+/// state's root; the ledger stores `next_state` for the next evaluation.
+#[derive(Clone, Debug)]
+pub struct Transition {
+    pub record: DecisionRecord,
+    pub next_state: Option<Value>,
 }
 
 /// Explicit, versioned encoding shared by host and guest. Object keys are sorted;
@@ -88,6 +99,14 @@ pub fn policy_digest(policy: &PolicyBundle) -> Result<String> {
     )
 }
 
+/// The root a ledger holds for an authorization state.
+pub fn state_root(state: &Value) -> Result<String> {
+    if canonical_bytes(state)?.len() > MAX_STATE_BYTES {
+        return Err(Error::InvalidInput);
+    }
+    commitment("trusted-rail.state.v1", state)
+}
+
 pub fn request_digest(request: &EvaluationRequest) -> Result<String> {
     commitment("trusted-rail.request.v1", request)
 }
@@ -109,6 +128,18 @@ impl RuleEngine for RegorusEngine {
         policy: &PolicyBundle,
         request: &EvaluationRequest,
     ) -> Result<DecisionRecord> {
+        Ok(self.transition(policy, request)?.record)
+    }
+}
+
+impl RegorusEngine {
+    /// Evaluate, and return the state the policy moved to with the record that
+    /// commits to it. Only an allow decision may change the state.
+    pub fn transition(
+        &self,
+        policy: &PolicyBundle,
+        request: &EvaluationRequest,
+    ) -> Result<Transition> {
         if policy.engine != engine_profile() {
             return Err(Error::Unsupported);
         }
@@ -139,6 +170,12 @@ impl RuleEngine for RegorusEngine {
             || request.evaluated_at_unix >= request.validity.expires_at
         {
             return Err(Error::InvalidInput);
+        }
+        // The policy must read the state the ledger holds, not one the caller chose.
+        if let Some(state) = &request.state {
+            if state_root(state)? != request.previous_state_root {
+                return Err(Error::InvalidInput);
+            }
         }
         // A fresh engine for each evaluation prevents cached data or extensions
         // leaking across requests. No host extensions, clock or randomness.
@@ -176,7 +213,16 @@ impl RuleEngine for RegorusEngine {
         if output.reason_codes.len() > 16 || !output.reason_codes.iter().all(|v| valid_text(v)) {
             return Err(Error::EvaluationFailed);
         }
-        Ok(DecisionRecord {
+        let next_state_root = match (&output.next_state, &request.state, output.decision) {
+            (None, _, _) => request.previous_state_root.clone(),
+            // A refused or pending action spends nothing, and a policy without
+            // state has none to move.
+            (Some(next), Some(_), Decision::Allow) => {
+                state_root(next).map_err(|_| Error::EvaluationFailed)?
+            }
+            _ => return Err(Error::EvaluationFailed),
+        };
+        let record = DecisionRecord {
             execution: request.execution.clone(),
             policy: policy.policy.clone(),
             engine: policy.engine.clone(),
@@ -184,12 +230,14 @@ impl RuleEngine for RegorusEngine {
             request_sha256: request_digest(request)?,
             context_sha256: commitment("trusted-rail.context.v1", &request.context)?,
             previous_state_root: request.previous_state_root.clone(),
-            // This profile evaluates a snapshot, not ledger mutations. Budgets
-            // are reserved atomically by the central ledger after proof validation.
-            next_state_root: request.previous_state_root.clone(),
+            next_state_root,
             decision: output.decision,
             reason_codes: output.reason_codes,
             validity: request.validity.clone(),
+        };
+        Ok(Transition {
+            record,
+            next_state: output.next_state,
         })
     }
 }

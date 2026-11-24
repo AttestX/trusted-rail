@@ -46,11 +46,22 @@ The reserved object key `$serde_json::private::Number` is rejected at every dept
 in policy data and request inputs to prevent Regorus interpreting an object as
 a number.
 
-This first profile evaluates an authorization-state snapshot and preserves its
-state root. It does not pretend to prove a ledger write. The central
-`AuthorizationLedger` must validate the proof, current policy/context/lease,
-reserve cumulative budgets atomically and consume an exact-request grant once.
-The retained optional proof argument must reject `None` on policy execution paths.
+A policy may keep authorization state, such as what a daily budget has spent. The
+request carries the state as `state`, which must hash to `previous_state_root`
+(`rego::state_root`), and the policy reads it as `input.state`. An allow decision
+may return `next_state`; the record then commits to it as `next_state_root`.
+A deny or approval-required decision never moves the state. Records therefore
+form a chain: each starts at the root the one before it ended on, so a proof
+covers the budget arithmetic, and a dropped or reordered record breaks the chain.
+State uses the same encoding as every input: integers only, so keep amounts in
+whole units such as cents. A request without `state` carries its root through
+unchanged.
+
+The engine proves the transition, not that the ledger stored it. The central
+`AuthorizationLedger` must validate the proof, check that `previous_state_root`
+is its current root, advance to `next_state_root` atomically and consume an
+exact-request grant once. The retained optional proof argument must reject
+`None` on policy execution paths.
 
 ## What is proved
 

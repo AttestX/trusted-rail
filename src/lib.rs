@@ -61,6 +61,13 @@ pub struct EvaluationRequest {
     pub parameters: Value,
     pub context: Value,
     pub previous_state_root: String,
+    /// The authorization state the policy reads as `input.state`, such as what
+    /// a budget has already spent. When present it must hash to
+    /// `previous_state_root` (`rego::state_root`), so the ledger that holds the
+    /// root, not the caller, decides which state is current. Absent, the policy
+    /// keeps no state and the root is carried through unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
     pub evaluated_at_unix: u64,
     pub validity: Validity,
 }
@@ -77,6 +84,8 @@ pub enum Decision {
 
 /// Proposed public output of native evaluation and a policy proof guest.
 /// A decision proves rule evaluation, not execution of external side effects.
+/// Records form a chain: one's `next_state_root` is the next one's
+/// `previous_state_root`, so a record cannot be dropped or reordered unnoticed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionRecord {
@@ -93,7 +102,8 @@ pub struct DecisionRecord {
     pub validity: Validity,
 }
 
-/// No network, wall-clock reads, randomness or independently mutable budget state.
+/// No network, wall-clock reads or randomness. State changes only as the policy's
+/// own `next_state`, committed in the record's `next_state_root`.
 /// Implementations reuse an upstream engine and reject unsupported policies.
 pub trait RuleEngine: Send + Sync {
     fn evaluate(
