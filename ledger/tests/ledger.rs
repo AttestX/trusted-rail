@@ -9,7 +9,7 @@ use trusted_rail::{
     },
     Decision, Error, PolicyBundle,
 };
-use trusted_rail_ledger::{Attempt, Ledger, ProofVerifier, NO_STATE_ROOT};
+use trusted_rail_ledger::{Attempt, Ledger, ProofVerifier, Prover, NO_STATE_ROOT};
 
 const BUDGET: &str = r#"
 package trusted
@@ -387,4 +387,89 @@ fn another_process_opening_the_ledger_loses_nothing() {
     other_process(&dir, "open");
     spend(&ledger, &who, "2", 10, 101).unwrap();
     assert!(other_process(&dir, "count").contains("decisions=2"));
+}
+
+/// Stands in for a proof network: runs the guest's entry point on the witness
+/// and, like the stand-in verifier expects, returns the digest of its output.
+/// While "proving" it lets the agent make one more decision.
+struct Guest<'a> {
+    ledger: &'a Ledger,
+    who: ExecutionIdentity,
+    honest: bool,
+    meanwhile: std::sync::atomic::AtomicU64,
+}
+impl Prover for Guest<'_> {
+    fn prove(&self, witness: &[u8], public_values: &[u8]) -> trusted_rail::Result<Vec<u8>> {
+        let committed = evaluate_witness(witness)?;
+        assert_eq!(committed, public_values);
+        let n = self
+            .meanwhile
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        spend(self.ledger, &self.who, &format!("meanwhile-{n}"), 1, 500).unwrap();
+        if self.honest {
+            Ok(receipt(&committed))
+        } else {
+            Ok(b"forged".to_vec())
+        }
+    }
+}
+struct Offline;
+impl Prover for Offline {
+    fn prove(&self, _: &[u8], _: &[u8]) -> trusted_rail::Result<Vec<u8>> {
+        Err(Error::Unavailable)
+    }
+}
+
+#[test]
+fn the_chain_is_proven_in_the_background_while_decisions_go_on() {
+    let dir = private_dir();
+    let who = agent("trader");
+    let ledger = open(&dir);
+    ledger.activate(&who, &policy(100), Some(&fresh())).unwrap();
+    for (id, at) in [("1", 100), ("2", 101), ("3", 102)] {
+        spend(&ledger, &who, id, 10, at).unwrap();
+    }
+    // A prover that is down, or returns a receipt that does not verify, proves nothing.
+    assert!(matches!(
+        ledger.prove_next(&who, 2, &Offline),
+        Err(Error::Unavailable)
+    ));
+    let forger = Guest {
+        ledger: &ledger,
+        who: who.clone(),
+        honest: false,
+        meanwhile: 0.into(),
+    };
+    assert!(matches!(
+        ledger.prove_next(&who, 2, &forger),
+        Err(Error::Rejected)
+    ));
+    assert_eq!(ledger.head(&who).unwrap().proven, 0);
+
+    // The same run is offered again. A decision made while it is being proven
+    // does not disturb it and waits for a later batch.
+    let prover = Guest {
+        ledger: &ledger,
+        who: who.clone(),
+        honest: true,
+        meanwhile: 10.into(),
+    };
+    let first = ledger.prove_next(&who, 2, &prover).unwrap().unwrap();
+    assert_eq!(first.count, 2);
+    let head = ledger.head(&who).unwrap();
+    assert_eq!((head.decisions, head.proven), (5, 2));
+    let mut proven = 2;
+    while let Some(batch) = ledger.prove_next(&who, 2, &prover).unwrap() {
+        proven += u64::from(batch.count);
+        // Each pass adds one decision, so stop feeding it once there are enough.
+        if proven >= 6 {
+            break;
+        }
+    }
+    let proofs = ledger.proofs(&who).unwrap();
+    assert!(proofs.len() >= 3);
+    for pair in proofs.windows(2) {
+        assert_eq!(pair[0].0.next_state_root, pair[1].0.previous_state_root);
+    }
+    assert_eq!(ledger.head(&who).unwrap().proven, proven);
 }
