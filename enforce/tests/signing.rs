@@ -157,7 +157,17 @@ fn privy_signs_in_and_refuses_what_is_not_typed() {
     let personal = r#"{"method": "personal_sign", "params": {"message": "hello"}}"#;
     let r = refused(sign("auth.privy.io", PRIVY_RPC, personal));
     eprintln!("personal: {r}");
-    assert!(r.contains("not typed yet") || r.contains("out of sight"), "{r}");
+    assert!(
+        r.contains("not typed yet") || r.contains("out of sight"),
+        "{r}"
+    );
+    // Signing a raw hash would sign Hyperliquid's digest with no typed data to
+    // check: refused on Privy and on any other host.
+    for host in ["auth.privy.io", "signer.example"] {
+        let raw = r#"{"method": "secp256k1_sign", "params": {"hash": "0x00"}}"#;
+        let r = refused(sign(host, PRIVY_RPC, raw));
+        assert!(r.contains("out of sight"), "{host}: {r}");
+    }
     let r = refused(sign("api.privy.io", "/v1/wallets/w1/rpc", send));
     assert!(
         r.contains("not typed yet") || r.contains("out of sight"),

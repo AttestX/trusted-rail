@@ -8,7 +8,9 @@
     "eth_sendTransaction", "eth_signTransaction", "eth_sign", "personal_sign",
     "eth_signTypedData", "eth_signTypedData_v3", "eth_signTypedData_v4",
     "eth_sendBundle", "eth_sendPrivateTransaction", "eth_sendRawTransactionConditional",
-    "wallet_sendCalls", "sendTransaction", "signTransaction"
+    "wallet_sendCalls", "sendTransaction", "signTransaction",
+    "secp256k1_sign", "eth_sign7702Authorization", "eth_signUserOperation",
+    "signMessage", "signAndSendTransaction"
   ],
   "functions": [
     "transfer(address,uint256)",
