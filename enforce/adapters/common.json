@@ -28,10 +28,12 @@
       "api.wise.com"
     ],
     "exchange": [
-      "api.hyperliquid.xyz",
+      "api.hyperliquid-testnet.xyz",
       "api.coinbase.com",
       "api.exchange.coinbase.com",
-      "api.binance.com",
+      "fapi.binance.com", "dapi.binance.com", "papi.binance.com",
+      "ws-api.binance.com", "ws-fapi.binance.com", "ws-api.binance.us",
+      "testnet.binance.vision", "testnet.binancefuture.com",
       "api.kraken.com",
       "api.bybit.com",
       "www.okx.com"

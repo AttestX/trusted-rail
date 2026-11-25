@@ -125,6 +125,10 @@ definitions. Built in:
   notional, or a limit order's quantity times its limit price); an order whose value the request
   does not state is refused, as are options, several orders in one request, and account changes.
   Cancels and closes are typed.
+- `exchange/hyperliquid` and `exchange/binance`: an order becomes `order.place` with its value in
+  its quote asset (USDC on Hyperliquid; USDT or USDC on Binance): price × size, or a market
+  order's quote amount. Orders whose value is not stated, several orders in one request, transfers
+  out and account control are refused; a WebSocket to a host that moves money is refused.
 - `payments/stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are
   refused; USD only.
 - `payments/x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what

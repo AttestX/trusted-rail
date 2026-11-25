@@ -1,0 +1,710 @@
+{
+  "id": "binance",
+  "category": "exchange",
+  "summary": "Binance spot (and Binance.US). An order is typed with its value in its quote asset: a market order's quoteOrderQty, or quantity times price for a limit, limit-maker, stop-loss-limit or take-profit-limit order. Only USDT and USDC pairs are typed (and USD pairs on Binance.US). An order whose value is not stated, pegged and trailing orders, several orders in one request, routed orders, replacing or amending an order, withdrawals and every other /sapi write are refused. Fields are read from the query and the body together; one given twice is refused. Cancels are typed; reads, test orders and user data streams pass.",
+  "input": "form",
+  "hosts": [
+    "api.binance.com",
+    "api1.binance.com",
+    "api2.binance.com",
+    "api3.binance.com",
+    "api4.binance.com",
+    "api-gcp.binance.com",
+    "api.binance.us"
+  ],
+  "unmatched": "refuse",
+  "actions": [
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order/test"
+      },
+      "pass": true
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USDT"
+          },
+          {
+            "at": "/input/quantity",
+            "is": [
+              null
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/type",
+          "in": [
+            "MARKET"
+          ],
+          "case": "any",
+          "reason": "an order by quoteOrderQty must be a market order"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quoteOrderQty",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdt"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USDT"
+          },
+          {
+            "at": "/input/type",
+            "is": [
+              "LIMIT",
+              "LIMIT_MAKER",
+              "STOP_LOSS_LIMIT",
+              "TAKE_PROFIT_LIMIT"
+            ],
+            "case": "any"
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/quoteOrderQty",
+          "in": [
+            null
+          ],
+          "reason": "an order gives quantity or quoteOrderQty, not both"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0,
+          "times": "/input/price"
+        },
+        "quantity_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0
+        },
+        "limit_price_micro": {
+          "at": "/input/price",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdt"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USDC"
+          },
+          {
+            "at": "/input/quantity",
+            "is": [
+              null
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/type",
+          "in": [
+            "MARKET"
+          ],
+          "case": "any",
+          "reason": "an order by quoteOrderQty must be a market order"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quoteOrderQty",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdc"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USDC"
+          },
+          {
+            "at": "/input/type",
+            "is": [
+              "LIMIT",
+              "LIMIT_MAKER",
+              "STOP_LOSS_LIMIT",
+              "TAKE_PROFIT_LIMIT"
+            ],
+            "case": "any"
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/quoteOrderQty",
+          "in": [
+            null
+          ],
+          "reason": "an order gives quantity or quoteOrderQty, not both"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0,
+          "times": "/input/price"
+        },
+        "quantity_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0
+        },
+        "limit_price_micro": {
+          "at": "/input/price",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdc"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USD"
+          },
+          {
+            "at": "/input/quantity",
+            "is": [
+              null
+            ]
+          },
+          {
+            "at": "/request/host",
+            "is": [
+              "api.binance.us"
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/type",
+          "in": [
+            "MARKET"
+          ],
+          "case": "any",
+          "reason": "an order by quoteOrderQty must be a market order"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quoteOrderQty",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usd"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}USD"
+          },
+          {
+            "at": "/input/type",
+            "is": [
+              "LIMIT",
+              "LIMIT_MAKER",
+              "STOP_LOSS_LIMIT",
+              "TAKE_PROFIT_LIMIT"
+            ],
+            "case": "any"
+          },
+          {
+            "at": "/request/host",
+            "is": [
+              "api.binance.us"
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/quoteOrderQty",
+          "in": [
+            null
+          ],
+          "reason": "an order gives quantity or quoteOrderQty, not both"
+        },
+        {
+          "at": "/input/side",
+          "in": [
+            "BUY",
+            "SELL"
+          ],
+          "case": "any",
+          "reason": "an order that is neither a buy nor a sell"
+        },
+        {
+          "at": "/input/pegPriceType",
+          "in": [
+            null
+          ],
+          "reason": "a pegged order's price is not stated"
+        },
+        {
+          "at": "/input/trailingDelta",
+          "in": [
+            null
+          ],
+          "reason": "a trailing order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/symbol",
+          "as": "lower"
+        },
+        "side": {
+          "at": "/input/side",
+          "as": "lower"
+        },
+        "order_type": {
+          "at": "/input/type",
+          "as": "lower"
+        },
+        "amount_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0,
+          "times": "/input/price"
+        },
+        "quantity_micro": {
+          "at": "/input/quantity",
+          "as": "micro",
+          "decimals": 0
+        },
+        "limit_price_micro": {
+          "at": "/input/price",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usd"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order",
+        "fields": [
+          {
+            "at": "/input/symbol",
+            "matches": "[A-Z0-9]{2,16}(USDT|USDC)"
+          }
+        ]
+      },
+      "refuse": "an order whose value is not stated (market by quantity, stop-loss or take-profit at market): give quoteOrderQty for a market order, or use a limit order"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/api/v3/order"
+      },
+      "refuse": "a pair not quoted in USDT or USDC (or USD, on Binance.US): its amount is not in dollars"
+    },
+    {
+      "when": {
+        "method": "DELETE",
+        "path": "/api/v3/order"
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "first": [
+            "/input/orderId",
+            "/input/origClientOrderId"
+          ],
+          "as": "lower"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "DELETE",
+        "path": "/api/v3/openOrders"
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "const": "all"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "DELETE",
+        "path": "/api/v3/orderList"
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "first": [
+            "/input/orderListId",
+            "/input/listClientOrderId"
+          ],
+          "as": "lower"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "binance"
+        }
+      }
+    },
+    {
+      "when": {
+        "path": "/api/v3/order/cancelReplace"
+      },
+      "refuse": "replacing an order changes it out of sight: cancel it and place a new one"
+    },
+    {
+      "when": {
+        "path": "/api/v3/order/amend/keepPriority"
+      },
+      "refuse": "amending an order changes it out of sight: cancel it and place a new one"
+    },
+    {
+      "when": {
+        "path": "/api/v3/order/oco"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/orderList/oco"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/orderList/oto"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/orderList/otoco"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/sor/order"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/sor/order/test"
+      },
+      "refuse": "several orders, or routed orders, in one request: place each on its own"
+    },
+    {
+      "when": {
+        "path": "/api/v3/userDataStream"
+      },
+      "pass": true
+    },
+    {
+      "when": {
+        "path": "/sapi/v1/capital/withdraw/apply"
+      },
+      "refuse": "withdrawals are not typed"
+    }
+  ]
+}
