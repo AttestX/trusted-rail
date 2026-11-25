@@ -1,0 +1,17 @@
+{
+ "modules": {
+  "mandate.rego": "\npackage trusted\nimport rego.v1\n\n# A sample trading mandate for Hyperliquid: reading is free, an order must be\n# in a listed market and under the per-order limit, and all orders of one UTC\n# day together stay under the daily limit. Everything else is refused.\n\nday := input.evaluated_at_unix - (input.evaluated_at_unix % 86400)\n\nspent := input.state.spent if input.state.day == day\nspent := 0 if input.state.day != day\n\non_exchange if {\n    input.operation == \"http.request\"\n    input.parameters.host == data.exchange\n}\n\norders := input.parameters.body.action.orders if {\n    on_exchange\n    input.parameters.path == \"/exchange\"\n    input.parameters.method == \"POST\"\n    input.parameters.body.action.type == \"order\"\n    count(input.parameters.body.action.orders) > 0\n}\n\n# Amounts are kept in cents, rounded up, because state holds integers only.\ncents(order) := ceil(to_number(order.s) * to_number(order.p) * 100)\n\nwithin_limits if {\n    every order in orders {\n        order.a in data.assets\n        cents(order) <= data.max_order_cents\n    }\n}\n\ntotal := spent + sum([cents(order) | some order in orders])\n\ndecision := {\"decision\": \"allow\", \"reason_codes\": [\"read_only\"]} if {\n    on_exchange\n    input.parameters.path == \"/info\"\n} else := {\n    \"decision\": \"allow\",\n    \"reason_codes\": [\"within_mandate\"],\n    \"next_state\": {\"day\": day, \"spent\": total},\n} if {\n    within_limits\n    total <= data.daily_limit_cents\n} else := {\"decision\": \"deny\", \"reason_codes\": [\"over_daily_limit\"]} if {\n    within_limits\n} else := {\"decision\": \"deny\", \"reason_codes\": [\"outside_mandate\"]}\n"
+ },
+ "data": {
+  "exchange": "api.hyperliquid-testnet.xyz",
+  "assets": [
+   4
+  ],
+  "max_order_cents": 10000,
+  "daily_limit_cents": 20000
+ },
+ "state": {
+  "day": 0,
+  "spent": 0
+ }
+}

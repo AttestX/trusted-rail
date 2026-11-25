@@ -1,0 +1,24 @@
+version: 1
+
+network_middlewares:
+  mandate:
+    name: Trading mandate
+    middleware: trusted-rail
+    order: 10
+    on_error: fail_closed
+    endpoints:
+      include:
+        - api.hyperliquid-testnet.xyz
+
+network_policies:
+  hyperliquid:
+    name: hyperliquid
+    endpoints:
+      - host: api.hyperliquid-testnet.xyz
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/python3.12

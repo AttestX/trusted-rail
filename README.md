@@ -102,6 +102,33 @@ its new place with the state it ended on. The ledger is trusted storage: a host
 that can rewrite the file can roll the state back, and a verifier that accepts
 each proven batch only where the last one ended is what detects that.
 
+## The OpenShell middleware
+
+`openshell-middleware/` (`trusted-rail-openshell`) is a service that enforces a
+mandate on a running agent. OpenShell keeps the agent in a sandbox with no network
+of its own and hands this service every HTTP request the agent makes to the hosts
+a mandate covers, with its body. The service builds an `http.request` action from
+what OpenShell observed and asks the ledger. Only an allow passes; a sandbox
+without a mandate, a body that cannot be read, a repeated request id and any error
+are refusals, and OpenShell refuses everything while the service is down
+(`on_error: fail_closed`).
+
+```
+trusted-rail-openshell serve --ledger /var/lib/rail/ledger.db --mandates /etc/rail/mandates
+trusted-rail-openshell chain --ledger /var/lib/rail/ledger.db --sandbox trader
+```
+
+`--mandates` holds one `<sandbox name>.json` per sandbox (`modules`, `data` and
+the starting `state`). `examples/hyperliquid-mandate.json` allows reading, and
+orders in listed markets under a per-order and a daily limit;
+`examples/sandbox-policy.yaml` is the OpenShell policy that routes the exchange's
+traffic to the service. `chain` prints where a sandbox's chain stands and
+re-evaluates its unproven decisions through the proof guest's entry point.
+
+It is a first version: no proof is generated or accepted yet, the mandate is a
+file the operator installs and is not signed by the user, and the connection
+from OpenShell is plain gRPC on the loopback address.
+
 ## What is proved
 
 `guest/src/main.rs` reads the policy/request witness, calls `evaluate_witness`

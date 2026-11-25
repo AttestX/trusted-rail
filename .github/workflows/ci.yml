@@ -28,3 +28,7 @@ jobs:
       - run: cargo clippy --locked --manifest-path ledger/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path ledger/Cargo.toml
       - run: python3 scripts/check_engine_features.py ledger/Cargo.toml
+      - run: cargo fmt --manifest-path openshell-middleware/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path openshell-middleware/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path openshell-middleware/Cargo.toml
+      - run: python3 scripts/check_engine_features.py openshell-middleware/Cargo.toml
