@@ -1,13 +1,11 @@
-//! Hyperliquid's signed actions. An order is signed as EIP-712 typed data
-//! whose message holds only `connectionId`, a hash of the action. A signer
-//! (Privy, Turnkey, a local key) sees 32 opaque bytes, so a signing request
-//! is typed only when it also carries the action it signs, and the action
-//! hashes to exactly that `connectionId`.
+//! Signed hashes of payloads. Some typed data a wallet signs holds only a
+//! hash of what it authorizes, so a signer sees opaque bytes. A request to
+//! sign such data is typed only when it also carries the payload, and the
+//! payload hashes, by the recipe its adapter gives (`signed_payload`), to
+//! exactly what is signed.
 //!
-//! The hash is the Python SDK's `action_hash`: keccak256 of the action in
-//! msgpack, in the key order it was written, then the nonce (8 bytes, big
-//! endian), then `0x00` without a vault or `0x01` and the vault's 20 bytes,
-//! then, with an expiry, `0x00` and the expiry (8 bytes).
+//! The payload is read as written: object keys keep their order, since a
+//! hash over msgpack depends on it, and a key given twice is refused.
 use alloy_primitives::keccak256;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
@@ -93,6 +91,23 @@ impl Ordered {
         }
     }
 
+    /// A JSON pointer (`/a/0/b`): `""` is the whole value.
+    pub fn pointer(&self, pointer: &str) -> Option<&Ordered> {
+        if pointer.is_empty() {
+            return Some(self);
+        }
+        let mut at = self;
+        for token in pointer.strip_prefix('/')?.split('/') {
+            let token = token.replace("~1", "/").replace("~0", "~");
+            at = match at {
+                Ordered::Object(_) => at.get(&token)?,
+                Ordered::List(items) => items.get(token.parse::<usize>().ok()?)?,
+                _ => return None,
+            };
+        }
+        Some(at)
+    }
+
     /// As a `serde_json::Value`, for typing (where order does not matter).
     pub fn to_value(&self) -> Value {
         match self {
@@ -112,8 +127,8 @@ impl Ordered {
         }
     }
 
-    /// msgpack as Python's `msgpack.packb` writes it: the smallest encoding
-    /// of each value, strings as str, floats as float64.
+    /// msgpack in its smallest encoding of each value (as Python's
+    /// `msgpack.packb` writes it): strings as str, floats as float64.
     pub fn msgpack(&self, out: &mut Vec<u8>) {
         fn len(out: &mut Vec<u8>, n: usize, fix: u8, fix_max: usize, codes: [u8; 3]) {
             if n < fix_max {
@@ -190,112 +205,55 @@ impl Ordered {
     }
 }
 
-/// The `connectionId` of a signed action: `{action, nonce, vaultAddress?,
-/// expiresAfter?}`, as the `/exchange` body carries them.
-pub fn connection_id(signed: &Ordered) -> Result<String, String> {
-    let action = signed.get("action").ok_or("no action")?;
-    if !matches!(action, Ordered::Object(_)) {
-        return Err("the action is not an object".into());
-    }
+/// Builds the bytes a signed payload's hash is taken over, part by part, as
+/// an adapter's `signed_payload.parts` say, and hashes them.
+pub fn digest(payload: &Ordered, spec: &crate::spec::SignedPayload) -> Result<String, String> {
+    use crate::spec::{Digest, Encode};
     let mut data = Vec::new();
-    action.msgpack(&mut data);
-    let nonce = match signed.get("nonce") {
-        Some(Ordered::Unsigned(n)) => *n,
-        _ => return Err("no nonce".into()),
-    };
-    data.extend(nonce.to_be_bytes());
-    match signed.get("vaultAddress") {
-        None | Some(Ordered::Null) => data.push(0),
-        Some(Ordered::Text(vault)) => {
-            let bytes = hex::decode(vault.strip_prefix("0x").unwrap_or(vault))
-                .ok()
-                .filter(|b| b.len() == 20)
-                .ok_or("a vault address that is not an address")?;
-            data.push(1);
-            data.extend(bytes);
-        }
-        _ => return Err("a vault address that is not an address".into()),
-    }
-    match signed.get("expiresAfter") {
-        None | Some(Ordered::Null) => {}
-        Some(Ordered::Unsigned(n)) => {
-            data.push(0);
-            data.extend(n.to_be_bytes());
-        }
-        _ => return Err("an expiry that is not a time".into()),
-    }
-    Ok(format!("0x{}", hex::encode(keccak256(&data))))
-}
-
-/// What a signing request asks to sign, if it is a Hyperliquid action.
-pub enum Signing {
-    /// Not Hyperliquid typed data.
-    Not,
-    /// An L1 action (orders, cancels, leverage): `source` is `a` on mainnet,
-    /// `b` on testnet; `connection_id` is what is signed.
-    Action {
-        source: String,
-        connection_id: String,
-    },
-    /// A user-signed action (`HyperliquidSignTransaction`: withdrawals,
-    /// transfers, approving agents).
-    UserSigned(String),
-}
-
-/// EIP-712 typed data in a signing request: Privy's and Turnkey-style
-/// `params.typed_data`, or a JSON-RPC `eth_signTypedData*` call's second
-/// parameter (an object, or the object as a string).
-pub fn typed_data(body: &Value) -> Option<Value> {
-    if let Some(t) = body.pointer("/params/typed_data") {
-        return Some(t.clone());
-    }
-    let method = body.get("method")?.as_str()?;
-    if !method.starts_with("eth_signTypedData") {
-        return None;
-    }
-    let p = body.pointer("/params/1")?;
-    match p {
-        Value::String(s) => serde_json::from_str(s).ok(),
-        Value::Object(_) => Some(p.clone()),
-        _ => None,
-    }
-}
-
-pub fn signing(typed: &Value) -> Signing {
-    let domain = typed.get("domain");
-    let name = domain.and_then(|d| d.get("name")).and_then(Value::as_str);
-    let chain = domain.and_then(|d| d.get("chainId")).and_then(|c| match c {
-        Value::Number(n) => n.as_u64(),
-        Value::String(s) => s
-            .strip_prefix("0x")
-            .map(|h| u64::from_str_radix(h, 16).ok())
-            .unwrap_or_else(|| s.parse().ok()),
-        _ => None,
-    });
-    let primary = typed
-        .get("primaryType")
-        .or_else(|| typed.get("primary_type"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    match name {
-        Some("Exchange") if chain == Some(1337) => {
-            let message = typed.get("message");
-            let field = |k: &str| {
-                message
-                    .and_then(|m| m.get(k))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
+    for part in &spec.parts {
+        let value = payload.pointer(&part.at);
+        let present = !matches!(value, None | Some(Ordered::Null));
+        if let Some(optional) = &part.optional {
+            let marker = if present {
+                &optional.prefix
+            } else {
+                &optional.absent
             };
-            if primary != "Agent" {
-                return Signing::UserSigned(primary.to_owned());
-            }
-            Signing::Action {
-                source: field("source"),
-                connection_id: field("connectionId"),
+            data.extend(hex::decode(marker.trim_start_matches("0x")).map_err(|e| e.to_string())?);
+            if !present {
+                continue;
             }
         }
-        Some("HyperliquidSignTransaction") => Signing::UserSigned(primary.to_owned()),
-        _ => Signing::Not,
+        let value = value
+            .filter(|_| present)
+            .ok_or_else(|| format!("{} is missing", part.at))?;
+        match part.encode {
+            Encode::Msgpack => value.msgpack(&mut data),
+            Encode::U64be => match value {
+                Ordered::Unsigned(n) => data.extend(n.to_be_bytes()),
+                _ => return Err(format!("{} is not a whole number", part.at)),
+            },
+            Encode::Hex => {
+                let bytes = match value {
+                    Ordered::Text(text) => {
+                        hex::decode(text.strip_prefix("0x").unwrap_or(text)).ok()
+                    }
+                    _ => None,
+                }
+                .filter(|b| part.width.is_none_or(|w| b.len() == w))
+                .ok_or_else(|| {
+                    format!(
+                        "{} is not {} bytes of hex",
+                        part.at,
+                        part.width.unwrap_or(0)
+                    )
+                })?;
+                data.extend(bytes);
+            }
+        }
     }
+    let hash = match spec.digest {
+        Digest::Keccak256 => keccak256(&data).0.to_vec(),
+    };
+    Ok(format!("0x{}", hex::encode(hash)))
 }

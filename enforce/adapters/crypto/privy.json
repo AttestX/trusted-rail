@@ -1,7 +1,7 @@
 {
   "id": "privy",
   "category": "crypto",
-  "summary": "Privy, as its agent wallet CLI uses it: Privy holds the key and signs on request. Signing in (device authorization, tokens, the wallet session) passes. A request to sign a Hyperliquid action is typed before this, as the action it carries; every other signature or transaction is refused for now, since what Privy would sign is not typed here. Reads pass.",
+  "summary": "Privy, as its agent wallet CLI uses it: Privy holds the key and signs on request. Signing in (device authorization, tokens, the wallet session) passes. A request to sign typed data that an adapter covers is typed before this, by that adapter; every other signature or transaction is refused for now, since what Privy would sign is not typed here. Reads pass.",
   "input": "json",
   "hosts": ["auth.privy.io", "api.privy.io"],
   "unmatched": "refuse",
@@ -9,7 +9,7 @@
     {"when": {"method": "POST", "path": "/api/oauth/v2/device_authorization"}, "pass": true},
     {"when": {"method": "POST", "path": "/api/oauth/v2/token"}, "pass": true},
     {"when": {"method": "POST", "path": "/api/oauth/v2/wallets/authenticate"}, "pass": true},
-    {"when": {"path": "/api/oauth/v2/wallets/*/rpc"}, "refuse": "a signature or transaction other than a Hyperliquid action carried with its request is not typed yet"},
-    {"when": {"path": "/v1/wallets/*/rpc"}, "refuse": "a signature or transaction other than a Hyperliquid action carried with its request is not typed yet"}
+    {"when": {"path": "/api/oauth/v2/wallets/*/rpc"}, "refuse": "a signature or transaction that no adapter covers is not typed yet"},
+    {"when": {"path": "/v1/wallets/*/rpc"}, "refuse": "a signature or transaction that no adapter covers is not typed yet"}
   ]
 }

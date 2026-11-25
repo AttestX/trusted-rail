@@ -129,8 +129,9 @@ definitions. Built in:
   its quote asset (USDC on Hyperliquid; USDT or USDC on Binance): price × size, or a market
   order's quote amount. Orders whose value is not stated, several orders in one request, transfers
   out and account control are refused; a WebSocket to a host that moves money is refused.
-- A request to sign a Hyperliquid action (through Privy, or any signer on any host) is typed as
-  the action it carries, once the action hashes to what is signed; signing blind is refused.
+- A request to sign typed data that holds only a hash (a Hyperliquid action, through Privy or any
+  signer on any host) is typed as the payload it carries in `x-signed-payload`, once the payload
+  hashes to what is signed by the adapter's recipe; signing blind is refused.
   `crypto/privy` lets Privy's sign-in through and refuses every other Privy signature for now.
 - `payments/stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are
   refused; USD only.

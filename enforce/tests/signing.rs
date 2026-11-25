@@ -2,7 +2,8 @@
 //! the request carries the action, and the action hashes to what is signed.
 //! The vectors are the Hyperliquid Python SDK's own (`action_hash`, 0.24.1).
 use serde_json::Value;
-use trusted_rail_enforce::hyperliquid::{connection_id, Ordered};
+use trusted_rail_enforce::hashed::{digest, Ordered};
+use trusted_rail_enforce::spec::SignedPayload;
 use trusted_rail_enforce::{type_request, Adapters, Observed, Typed};
 
 const VECTORS: &str = include_str!("data/hyperliquid_signing.json");
@@ -49,12 +50,21 @@ fn refused(t: Typed) -> String {
     }
 }
 
+/// The hash recipe, as the Hyperliquid adapter gives it.
+fn recipe() -> SignedPayload {
+    let adapter: Value = serde_json::from_str(include_str!(
+        "../adapters/exchange/hyperliquid-signing.json"
+    ))
+    .unwrap();
+    serde_json::from_value(adapter["signed_payload"].clone()).unwrap()
+}
+
 #[test]
 fn the_hash_is_the_sdks() {
     for (name, id, privy) in vectors() {
         let body: Ordered = serde_json::from_str(&privy).unwrap();
-        let shown = body.get("hyperliquid_action").unwrap();
-        assert_eq!(connection_id(shown).unwrap(), id, "{name}");
+        let shown = body.get("signed_payload").unwrap();
+        assert_eq!(digest(shown, &recipe()).unwrap(), id, "{name}");
     }
 }
 
@@ -103,19 +113,19 @@ fn a_signature_over_an_order_it_shows_is_that_order() {
 }
 
 /// Privy refuses unknown fields in its RPC body ("Unrecognized key(s) in
-/// object: 'hyperliquid_action'", seen live), so the action travels in a
+/// object", seen live), so the payload travels in a
 /// header, which Privy's request signature does not cover.
 #[test]
 fn the_action_can_travel_in_a_header() {
     let all: Vec<Value> = serde_json::from_str(VECTORS).unwrap();
     for v in &all {
         let (bare, header) = (v["bare"].as_str().unwrap(), v["header"].as_str().unwrap());
-        assert!(!bare.contains("hyperliquid_action"));
+        assert!(!bare.contains("signed_payload"));
         let typed = sign_with(
             "auth.privy.io",
             PRIVY_RPC,
             bare,
-            &[("X-Hyperliquid-Action", header)],
+            &[("X-Signed-Payload", header)],
         );
         assert!(matches!(typed, Typed::Money(_)), "{}: {typed:?}", v["name"]);
     }
@@ -136,22 +146,22 @@ fn the_action_can_travel_in_a_header() {
         "auth.privy.io",
         PRIVY_RPC,
         bare,
-        &[("x-hyperliquid-action", &other)],
+        &[("x-signed-payload", &other)],
     ));
-    assert!(r.contains("not the action signed"), "{r}");
+    assert!(r.contains("not the one signed"), "{r}");
     // Not base64, or not JSON.
     let r = refused(sign_with(
         "auth.privy.io",
         PRIVY_RPC,
         bare,
-        &[("x-hyperliquid-action", "%%%")],
+        &[("x-signed-payload", "%%%")],
     ));
     assert!(r.contains("not base64"), "{r}");
     let r = refused(sign_with(
         "auth.privy.io",
         PRIVY_RPC,
         bare,
-        &[("x-hyperliquid-action", "bm90IGpzb24=")],
+        &[("x-signed-payload", "bm90IGpzb24=")],
     ));
     assert!(r.contains("cannot be read"), "{r}");
     // In the body and in the header: refused, whatever they say.
@@ -160,7 +170,7 @@ fn the_action_can_travel_in_a_header() {
         "auth.privy.io",
         PRIVY_RPC,
         both,
-        &[("x-hyperliquid-action", header)],
+        &[("x-signed-payload", header)],
     ));
     assert!(r.contains("given twice"), "{r}");
 }
@@ -171,16 +181,17 @@ fn signing_blind_or_something_else_is_refused() {
     let mut body: Value = serde_json::from_str(&privy).unwrap();
     // Without the action.
     let mut blind = body.clone();
-    blind.as_object_mut().unwrap().remove("hyperliquid_action");
+    blind.as_object_mut().unwrap().remove("signed_payload");
     assert!(refused(sign("auth.privy.io", PRIVY_RPC, &blind.to_string())).contains("blind"));
     // Another action shown than the one signed: a bigger size.
     let other = privy.replace("\"s\": \"0.0125\"", "\"s\": \"125\"");
     assert_ne!(other, privy);
-    assert!(refused(sign("auth.privy.io", PRIVY_RPC, &other)).contains("not the action signed"));
+    assert!(refused(sign("auth.privy.io", PRIVY_RPC, &other)).contains("not the one signed"));
     // The same action with its keys in another order hashes differently: what is
     // signed is the action as written. (serde_json sorts keys.)
-    assert!(refused(sign("auth.privy.io", PRIVY_RPC, &body.to_string()))
-        .contains("not the action signed"));
+    assert!(
+        refused(sign("auth.privy.io", PRIVY_RPC, &body.to_string())).contains("not the one signed")
+    );
     // A key given twice could be read two ways.
     let twice = privy.replacen("\"nonce\": ", "\"nonce\": 1, \"nonce\": ", 1);
     assert!(refused(sign("auth.privy.io", PRIVY_RPC, &twice)).contains("given twice"));
@@ -240,4 +251,33 @@ fn privy_signs_in_and_refuses_what_is_not_typed() {
         r.contains("not typed yet") || r.contains("out of sight"),
         "{r}"
     );
+}
+
+#[test]
+fn a_signing_adapter_is_checked_when_loaded() {
+    let common = include_str!("../adapters/common.json");
+    let load = |adapter: Value| Adapters::load(common, &[&adapter.to_string()]).err();
+    let refuse = serde_json::json!([{"refuse": "no"}]);
+    // A typed-data adapter names the domain it covers.
+    let e = load(serde_json::json!({"id": "t", "category": "exchange",
+        "input": "typed_data_signature", "actions": refuse}));
+    assert!(e.unwrap().contains("domain"));
+    // A domain or a payload recipe only on one.
+    let e = load(
+        serde_json::json!({"id": "t", "category": "exchange", "input": "json",
+        "hosts": ["x.example"], "domain": {"name": "X"}, "actions": refuse}),
+    );
+    assert!(e.unwrap().contains("only for typed_data_signature"));
+    // Checking a payload needs its recipe, and stands alone.
+    let e = load(serde_json::json!({"id": "t", "category": "exchange",
+        "input": "typed_data_signature", "domain": {"name": "X"},
+        "actions": [{"check_payload": true}]}));
+    assert!(e.unwrap().contains("signed_payload"));
+    let recipe = serde_json::json!({"hash_at": "/input/message/h",
+        "parts": [{"at": "/a", "encode": "hex"}], "digest": "keccak256",
+        "as_request": {"method": "POST", "host": "x.example", "path": "/x"}});
+    let e = load(serde_json::json!({"id": "t", "category": "exchange",
+        "input": "typed_data_signature", "domain": {"name": "X"}, "signed_payload": recipe,
+        "actions": [{"check_payload": true}]}));
+    assert!(e.unwrap().contains("width"));
 }

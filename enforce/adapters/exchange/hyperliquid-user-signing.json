@@ -1,0 +1,10 @@
+{
+  "id": "hyperliquid-user-signing",
+  "category": "exchange",
+  "summary": "A request, to any signer, to sign a Hyperliquid user-signed action (withdrawals, transfers, approving agents). Not typed yet, so refused.",
+  "input": "typed_data_signature",
+  "domain": {"name": "HyperliquidSignTransaction"},
+  "actions": [
+    {"refuse": "a transfer, withdrawal or account change signed by the user is not typed"}
+  ]
+}
