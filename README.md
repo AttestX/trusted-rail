@@ -94,7 +94,9 @@ and state, evaluates, and in the same transaction records the decision and moves
 the state. The caller cannot supply the state or the policy. `next_batch` returns
 the unproven records after the last proof with their guest witness, and
 `record_proof` accepts a receipt only for exactly that run, through a
-`ProofVerifier` the embedding service supplies.
+`ProofVerifier` the embedding service supplies. `prove_next` does both around a
+`Prover` the service also supplies; it holds no lock while proving, so decisions
+continue and wait for a later batch.
 
 A ledger is not a global service. Whoever enforces for an agent opens one beside
 the enforcer and holds that agent's entries. An agent that moves is activated at

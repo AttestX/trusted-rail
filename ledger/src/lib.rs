@@ -40,6 +40,15 @@ pub trait ProofVerifier: Send + Sync {
     fn verify(&self, public_values: &[u8], receipt: &[u8]) -> Result<()>;
 }
 
+/// Produces a proof receipt. The embedding service supplies it, typically a
+/// client of a proof network; the ledger never proves anything itself.
+pub trait Prover: Send + Sync {
+    /// Runs the approved guest on `witness` and returns a receipt for it. The
+    /// guest must commit exactly `public_values`; the ledger checks the receipt
+    /// with its verifier and does not take the prover's word.
+    fn prove(&self, witness: &[u8], public_values: &[u8]) -> Result<Vec<u8>>;
+}
+
 /// The authenticated circumstances of one action: who acts, as which
 /// execution, and when. The enforcer fills this in from what it observed.
 pub struct Attempt {
@@ -436,6 +445,26 @@ impl Ledger {
             params![summary.count, key],
         ))?;
         db(tx.commit())
+    }
+
+    /// Proves the next unproven run, at most `limit` decisions, and records the
+    /// proof. Returns what was proven, or `None` when nothing is left. Proving
+    /// may take minutes and holds no lock: decisions go on meanwhile and wait
+    /// for a later batch. A failed or refused proof records nothing, so the
+    /// same run is offered again on the next call.
+    pub fn prove_next(
+        &self,
+        execution: &ExecutionIdentity,
+        limit: usize,
+        prover: &dyn Prover,
+    ) -> Result<Option<BatchRecord>> {
+        let Some(batch) = self.next_batch(execution, limit)? else {
+            return Ok(None);
+        };
+        let public_values = encode_batch_public_values(&batch.summary)?;
+        let receipt = prover.prove(&batch.witness, &public_values)?;
+        self.record_proof(execution, &batch.summary, &receipt)?;
+        Ok(Some(batch.summary))
     }
 
     /// Every accepted proof in chain order, with its receipt, for a verifier
