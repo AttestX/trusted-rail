@@ -79,6 +79,29 @@ not an integer is carried as its decimal text (`0.5` becomes `"0.5"`); compare i
 with `to_number`. A policy that needs the body's fields must deny a request
 without `body`, or an oversized or malformed body would pass unread.
 
+## The ledger
+
+The engine decides and keeps nothing. `ledger/` (`trusted-rail-ledger`, a separate
+package so that storage never reaches the proof guest) keeps what a decision
+depends on and leaves behind, in one SQLite file:
+
+- the active policy of each agent, and its state and state root;
+- every decision record, in order, with the request that produced it;
+- the proofs accepted so far.
+
+`Ledger::decide` takes an action and who attempted it. It reads the stored policy
+and state, evaluates, and in the same transaction records the decision and moves
+the state. The caller cannot supply the state or the policy. `next_batch` returns
+the unproven records after the last proof with their guest witness, and
+`record_proof` accepts a receipt only for exactly that run, through a
+`ProofVerifier` the embedding service supplies.
+
+A ledger is not a global service. Whoever enforces for an agent opens one beside
+the enforcer and holds that agent's entries. An agent that moves is activated at
+its new place with the state it ended on. The ledger is trusted storage: a host
+that can rewrite the file can roll the state back, and a verifier that accepts
+each proven batch only where the last one ended is what detects that.
+
 ## What is proved
 
 `guest/src/main.rs` reads the policy/request witness, calls `evaluate_witness`

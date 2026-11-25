@@ -147,7 +147,10 @@ pub struct ExecutionGrant {
     pub validity: Validity,
 }
 
-/// Centrally hosted by the policy gateway, shared across all execution nodes.
+/// The grant interface of a ledger: a proven decision is reserved, then consumed
+/// once immediately before dispatch. Whoever enforces hosts the ledger, never the
+/// workload being judged. The `trusted-rail-ledger` crate in this repository holds
+/// the storage for policies, state roots and the decision chain.
 #[async_trait]
 pub trait AuthorizationLedger: Send + Sync {
     /// In one transaction: check policy/revocation/current roots, validate required
