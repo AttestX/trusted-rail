@@ -36,6 +36,8 @@ pub struct Subject {
     pub action_id: String,
     pub context: Value,
     pub previous_state_root: String,
+    /// The state behind `previous_state_root`, when the policy keeps any.
+    pub state: Option<Value>,
     pub evaluated_at_unix: u64,
     pub validity: Validity,
 }
@@ -51,6 +53,7 @@ impl Action {
             parameters: self.parameters,
             context: subject.context,
             previous_state_root: subject.previous_state_root,
+            state: subject.state,
             evaluated_at_unix: subject.evaluated_at_unix,
             validity: subject.validity,
         }

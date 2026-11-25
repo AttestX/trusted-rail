@@ -52,6 +52,7 @@ fn subject() -> Subject {
         action_id: "request-1".into(),
         context: json!({}),
         previous_state_root: "0".repeat(64),
+        state: None,
         evaluated_at_unix: 100,
         validity: serde_json::from_value(json!({"not_before":100,"expires_at":200})).unwrap(),
     }
