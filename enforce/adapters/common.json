@@ -1,18 +1,37 @@
 {
-  "money_hosts": [
-    "api.paypal.com",
-    "api-m.paypal.com",
-    "api.squareup.com",
-    "api.wise.com",
-    "api.adyen.com",
-    "api.hyperliquid.xyz",
-    "api.coinbase.com",
-    "api.exchange.coinbase.com",
-    "api.binance.com",
-    "api.kraken.com",
-    "api.bybit.com",
-    "www.okx.com"
-  ],
+  "categories": {
+    "crypto": "Crypto, on-chain",
+    "exchange": "Crypto exchanges",
+    "broker": "Brokers",
+    "bank": "Banking",
+    "payments": "Payments",
+    "commerce": "E-commerce",
+    "ads": "Advertising",
+    "content": "Content and publishing",
+    "comms": "Communications",
+    "cloud": "Cloud and SaaS",
+    "security": "Security"
+  },
+  "sensitive_hosts": {
+    "payments": [
+      "api.paypal.com",
+      "api-m.paypal.com",
+      "api.squareup.com",
+      "api.adyen.com"
+    ],
+    "bank": [
+      "api.wise.com"
+    ],
+    "exchange": [
+      "api.hyperliquid.xyz",
+      "api.coinbase.com",
+      "api.exchange.coinbase.com",
+      "api.binance.com",
+      "api.kraken.com",
+      "api.bybit.com",
+      "www.okx.com"
+    ]
+  },
   "chains": [
     {"id": 1, "name": "ethereum", "native": "ETH"},
     {"id": 10, "name": "optimism", "native": "ETH"},

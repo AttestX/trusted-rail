@@ -1,5 +1,6 @@
 {
   "id": "evm",
+  "category": "crypto",
   "summary": "A signed EVM transaction sent through any JSON-RPC endpoint: a native transfer, an ERC-20 transfer or approval, or any other contract call. Calls that sign or send out of sight are refused.",
   "input": "jsonrpc_raw_transaction",
   "methods": ["eth_sendRawTransaction", "eth_sendRawTransactionSync"],

@@ -165,7 +165,9 @@ fn a_money_host_without_an_adapter_is_refused_except_for_reads() {
         typed(&observe("GET", "api.hyperliquid.xyz", "/info", &[], b"")),
         Typed::Http(_)
     ));
-    let hosts = Adapters::builtin().with_money_hosts(&["pay.example.com"]);
+    let hosts = Adapters::builtin()
+        .with_sensitive_hosts("payments", &["pay.example.com"])
+        .unwrap();
     assert!(matches!(
         type_request(
             &observe("POST", "pay.example.com", "/send", &[], b"{}"),
@@ -541,9 +543,10 @@ fn the_built_in_definitions_load_from_their_directory_too() {
 /// A new API is a JSON file: no Rust change.
 #[test]
 fn an_api_is_added_by_a_definition_alone() {
-    let common = r#"{"money_hosts": []}"#;
+    let common = r#"{"categories": {"payments": "Payments"}}"#;
     let paypal = r#"{
       "id": "paypal-payouts",
+      "category": "payments",
       "input": "json",
       "hosts": ["api-m.paypal.com"],
       "actions": [{
@@ -604,42 +607,42 @@ fn an_api_is_added_by_a_definition_alone() {
 
 #[test]
 fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
-    let common = r#"{}"#;
+    let common = r#"{"categories": {"payments": "Payments"}}"#;
     let cases = [
         (
-            r#"{"id": "a", "input": "form", "actions": [{"refuse": "x"}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "actions": [{"refuse": "x"}]}"#,
             "hosts",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {}}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {}}]}"#,
             "not a parameter",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "http.request", "resource": "r", "parameters": {"r": {"at": "/input/x"}}}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"operation": "http.request", "resource": "r", "parameters": {"r": {"at": "/input/x"}}}]}"#,
             "may write",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/elsewhere"}}}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/elsewhere"}}}]}"#,
             "outside",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/input/x", "as": "micro"}}}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/input/x", "as": "micro"}}}]}"#,
             "decimals",
         ),
         (
-            r#"{"id": "a", "input": "json", "hosts": ["h"], "actions": [{"when": {"function": "transfer(address,uint256)"}, "refuse": "x"}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "json", "hosts": ["h"], "actions": [{"when": {"function": "transfer(address,uint256)"}, "refuse": "x"}]}"#,
             "only for",
         ),
         (
-            r#"{"id": "a", "input": "jsonrpc_raw_transaction", "methods": ["m"], "actions": [{"when": {"function": "f(string)"}, "refuse": "x"}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "jsonrpc_raw_transaction", "methods": ["m"], "actions": [{"when": {"function": "f(string)"}, "refuse": "x"}]}"#,
             "static",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}], "typo": 1}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}], "typo": 1}"#,
             "unknown field",
         ),
         (
-            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "refuse": "x", "resource": "r", "parameters": {"r": {"const": "x"}}}]}"#,
+            r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "refuse": "x", "resource": "r", "parameters": {"r": {"const": "x"}}}]}"#,
             "exactly one",
         ),
     ];
@@ -649,7 +652,7 @@ fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
             .unwrap_or_else(|| panic!("{adapter} loaded"));
         assert!(err.contains(expected), "{adapter}: {err}");
     }
-    let twice = r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}]}"#;
+    let twice = r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}]}"#;
     assert!(Adapters::load(common, &[twice, twice])
         .err()
         .unwrap()
@@ -658,8 +661,8 @@ fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
 
 #[test]
 fn decimal_text_amounts_round_up_to_millionths() {
-    let common = r#"{}"#;
-    let adapter = r#"{"id": "ex", "input": "json", "hosts": ["ex.example"], "actions": [{
+    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let adapter = r#"{"id": "ex", "category": "payments", "input": "json", "hosts": ["ex.example"], "actions": [{
         "operation": "payment", "resource": "to",
         "parameters": {"to": {"const": "x"}, "amount_micro": {"at": "/input/amount", "as": "micro", "decimals": 0}}}]}"#;
     let adapters = Adapters::load(common, &[adapter]).unwrap();
@@ -680,4 +683,31 @@ fn decimal_text_amounts_round_up_to_millionths() {
     assert!(amount("\"-1\"").is_err());
     assert!(amount("\"1e3\"").is_err());
     assert!(amount("\"0\"").is_err());
+}
+
+#[test]
+fn hosts_and_adapters_have_categories() {
+    let a = Adapters::builtin();
+    assert_eq!(a.category_of("api.binance.com"), Some("exchange"));
+    assert_eq!(a.category_of("API.Stripe.com."), Some("payments"));
+    assert_eq!(a.category_of("example.com"), None);
+    assert!(a.categorised().contains(&("evm", "crypto")));
+    let r = refused(typed(&observe(
+        "POST",
+        "api.bybit.com",
+        "/v5/order/create",
+        &[],
+        b"{}",
+    )));
+    assert!(r.contains("crypto exchanges host (exchange)"), "{r}");
+    assert!(Adapters::builtin()
+        .with_sensitive_hosts("casino", &["x.example"])
+        .is_err());
+    // An adapter or host in an unknown category is refused when loaded.
+    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let odd = r#"{"id": "odd", "category": "casino", "input": "json", "hosts": ["x.example"], "actions": []}"#;
+    assert!(Adapters::load(common, &[odd]).is_err());
+    let common =
+        r#"{"categories": {"payments": "Payments"}, "sensitive_hosts": {"casino": ["x.example"]}}"#;
+    assert!(Adapters::load(common, &[]).is_err());
 }

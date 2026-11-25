@@ -12,9 +12,14 @@ use std::collections::BTreeMap;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Common {
-    /// Hosts that can move money: a write to one that no adapter types is refused.
+    /// Category id → its name: what kind of service an adapter or host is
+    /// (`crypto`, `exchange`, `payments`, ...). ClawUp's mandate templates use
+    /// the same ids.
+    pub categories: BTreeMap<String, String>,
+    /// Category → hosts that can move money or act for the owner: a write to
+    /// one that no adapter types is refused.
     #[serde(default)]
-    pub money_hosts: Vec<String>,
+    pub sensitive_hosts: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub chains: Vec<Chain>,
     #[serde(default)]
@@ -44,6 +49,8 @@ pub struct Token {
 #[serde(deny_unknown_fields)]
 pub struct Adapter {
     pub id: String,
+    /// One of `common.json`'s categories.
+    pub category: String,
     #[serde(default)]
     pub summary: String,
     /// How the request is read. See [`Input`].

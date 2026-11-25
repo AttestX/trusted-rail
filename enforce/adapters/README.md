@@ -9,15 +9,21 @@ here, an entry in `BUILTIN` (`src/lib.rs`) if it ships built in, and a test.
 
 | Field | Meaning |
 |---|---|
-| `money_hosts` | Hosts that can move money. A write to one that no adapter types is refused. An adapter's own `hosts` count too |
+| `categories` | Category id → name: what kind of service an adapter or host is. The ids are shared with ClawUp's mandate templates |
+| `sensitive_hosts` | Category → hosts that can move money or act for the owner. A write to one that no adapter types is refused, naming the category. An adapter's own `hosts` count too, in its category |
 | `chains` | `{id, name, native}`: chain ids as mandates name them, and each chain's native token |
 | `tokens` | `{chain, address, symbol, decimals}`: tokens whose amounts can be put in millionths |
+
+The categories: `crypto` (on-chain), `exchange` (crypto exchanges), `broker`, `bank`,
+`payments`, `commerce`, `ads`, `content`, `comms`, `cloud`, and `security` for what applies to
+every category.
 
 ## An adapter
 
 | Field | Meaning |
 |---|---|
 | `id` | Letters, digits and dashes; prefixes every refusal it gives |
+| `category` | One of `common.json`'s categories |
 | `input` | `form` or `json` (a body, on `hosts`; reads pass unread), `header_json` (base64 JSON in `header`, on any host), `jsonrpc_raw_transaction` (a signed EVM transaction in a call named in `methods`, on any host; `refuse_methods` are refused outright) |
 | `functions` | Function signatures, so `"as": "function"` can name a selector |
 | `unmatched` | `refuse` (the default) or `pass`: what a covered request no action matches becomes |

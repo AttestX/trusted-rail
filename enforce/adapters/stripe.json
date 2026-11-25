@@ -1,5 +1,6 @@
 {
   "id": "stripe",
+  "category": "payments",
   "summary": "Stripe, as a merchant's agent uses it. Money leaves a Stripe account by a transfer, a payout or a refund. Reads pass; every other write is refused, since paying an invoice or confirming a charge moves money too. Only USD is typed, since limits are in US cents.",
   "input": "form",
   "hosts": ["api.stripe.com"],

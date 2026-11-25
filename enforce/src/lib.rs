@@ -12,7 +12,7 @@
 //! Adding an API is a JSON file and a test, with no Rust change.
 //!
 //! - A request an adapter covers becomes its action, or is refused.
-//! - A write to a money host that no adapter types is refused.
+//! - A write to a sensitive host (by category: exchange, payments, ...) that no adapter types is refused.
 //! - Anything else is an ordinary `http.request`, for the mandate's host rules.
 //!
 //! It never reads what the agent says about a request, only the request.
@@ -103,7 +103,9 @@ struct Loaded {
 
 /// A set of loaded definitions.
 pub struct Adapters {
-    money_hosts: Vec<String>,
+    categories: BTreeMap<String, String>,
+    /// Host → category.
+    sensitive_hosts: BTreeMap<String, String>,
     chains: Vec<spec::Chain>,
     tokens: Vec<spec::Token>,
     adapters: Vec<Loaded>,
@@ -128,18 +130,39 @@ impl Adapters {
                 return Err(format!("common: token {} is not valid", token.symbol));
             }
         }
+        if common.categories.is_empty() {
+            return Err("common: no categories".into());
+        }
+        let mut sensitive_hosts = BTreeMap::new();
+        for (category, hosts) in &common.sensitive_hosts {
+            if !common.categories.contains_key(category) {
+                return Err(format!("common: {category} is not a category"));
+            }
+            for h in hosts {
+                if sensitive_hosts.insert(host(h), category.clone()).is_some() {
+                    return Err(format!("common: {h} is listed twice"));
+                }
+            }
+        }
         let mut loaded = Vec::new();
         for text in adapters {
             let adapter: spec::Adapter =
                 serde_json::from_str(text).map_err(|e| format!("adapter: {e}"))?;
             let id = adapter.id.clone();
+            if !common.categories.contains_key(&adapter.category) {
+                return Err(format!(
+                    "adapter {id}: {} is not a category",
+                    adapter.category
+                ));
+            }
             if loaded.iter().any(|l: &Loaded| l.spec.id == id) {
                 return Err(format!("adapter {id} is defined twice"));
             }
             loaded.push(check(adapter).map_err(|e| format!("adapter {id}: {e}"))?);
         }
         Ok(Adapters {
-            money_hosts: common.money_hosts.iter().map(|h| host(h)).collect(),
+            categories: common.categories,
+            sensitive_hosts,
             chains: common.chains,
             tokens: common
                 .tokens
@@ -229,16 +252,49 @@ impl Adapters {
         }
     }
 
-    /// More money hosts, such as the ones a sandbox policy opens.
-    pub fn with_money_hosts(mut self, extra: &[&str]) -> Self {
-        self.money_hosts.extend(extra.iter().map(|h| host(h)));
-        self
+    /// More sensitive hosts in a category, such as the ones a sandbox policy
+    /// opens. Refused if the category is not one of `common.json`'s.
+    pub fn with_sensitive_hosts(mut self, category: &str, extra: &[&str]) -> Result<Self, String> {
+        if !self.categories.contains_key(category) {
+            return Err(format!("{category} is not a category"));
+        }
+        for h in extra {
+            self.sensitive_hosts.insert(host(h), category.to_owned());
+        }
+        Ok(self)
     }
 
-    /// A money host: listed in `common.json`, added, or covered by an adapter.
-    pub fn is_money(&self, name: &str) -> bool {
+    /// The category of a sensitive host: listed in `common.json`, added, or
+    /// covered by an adapter (the adapter's category).
+    pub fn category_of(&self, name: &str) -> Option<&str> {
         let name = host(name);
-        self.money_hosts.contains(&name) || self.adapters.iter().any(|a| a.hosts.contains(&name))
+        self.sensitive_hosts
+            .get(&name)
+            .map(String::as_str)
+            .or_else(|| {
+                self.adapters
+                    .iter()
+                    .find(|a| a.hosts.contains(&name))
+                    .map(|a| a.spec.category.as_str())
+            })
+    }
+
+    /// A category's name, from its id.
+    pub fn category_name(&self, id: &str) -> Option<&str> {
+        self.categories.get(id).map(String::as_str)
+    }
+
+    /// The categories, id → name.
+    pub fn categories(&self) -> &BTreeMap<String, String> {
+        &self.categories
+    }
+
+    /// Each loaded adapter's id and category, in the order they are tried.
+    pub fn categorised(&self) -> Vec<(&str, &str)> {
+        self.adapters
+            .iter()
+            .map(|a| (a.spec.id.as_str(), a.spec.category.as_str()))
+            .collect()
     }
 
     /// The ids of the loaded adapters, in the order they are tried.
@@ -308,10 +364,12 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
                 return typed;
             }
         }
-        if adapters.is_money(&name) {
+        if let Some(category) = adapters.category_of(&name) {
+            let kind = adapters.category_name(category).unwrap_or(category);
             return Typed::Refused(format!(
-                "{} {name} can move money and no adapter types it",
-                request.method.to_ascii_uppercase()
+                "{} {name}: a {} host ({category}) that no adapter types",
+                request.method.to_ascii_uppercase(),
+                kind.to_lowercase()
             ));
         }
     }

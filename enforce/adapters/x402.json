@@ -1,5 +1,6 @@
 {
   "id": "x402",
+  "category": "payments",
   "summary": "An x402 version 2 payment, on any host: the PAYMENT-SIGNATURE header holds the accepted terms and an EIP-3009 authorization. It is typed only when what is signed is exactly what was accepted.",
   "input": "header_json",
   "header": "payment-signature",

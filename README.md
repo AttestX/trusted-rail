@@ -125,7 +125,7 @@ signed EVM transactions and their ABI arguments) and applies the definitions. Bu
   from its own servers (a remote MCP server, a connector, a networked hosted shell, a stored agent
   or prompt) is refused on any host, and a model host takes only model endpoints. Those calls
   never pass the proxy, so they could not be decided.
-- A write to a money host (`common.json`) that no adapter types is refused. Everything else is an
+- A write to a sensitive host (`common.json`, grouped by category: `exchange`, `payments`, `bank`, ...) that no adapter types is refused, naming the category. Every adapter has a category too. Everything else is an
   ordinary `http.request`.
 
 Amounts are rounded up, so a limit is never passed by rounding.
