@@ -1,0 +1,522 @@
+use base64::Engine;
+use serde_json::{json, Value};
+use trusted_rail_enforce::{evm, type_request, Hosts, Observed, Typed};
+
+fn observe<'a>(
+    method: &'a str,
+    host: &'a str,
+    path: &'a str,
+    headers: &'a [(&'a str, &'a str)],
+    body: &'a [u8],
+) -> Observed<'a> {
+    Observed {
+        method,
+        scheme: "https",
+        host,
+        port: 443,
+        path,
+        query: "",
+        binary: "/usr/bin/python3",
+        headers,
+        body,
+    }
+}
+
+fn typed(o: &Observed) -> Typed {
+    type_request(o, &Hosts::default())
+}
+
+fn money(t: Typed) -> (String, String, Value) {
+    match t {
+        Typed::Money(a) => (a.operation, a.resource, a.parameters),
+        other => panic!("expected money, got {other:?}"),
+    }
+}
+
+fn refused(t: Typed) -> String {
+    match t {
+        Typed::Refused(r) => r,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+// ---- Stripe
+
+#[test]
+fn a_stripe_transfer_in_usd_is_a_payment() {
+    let body = b"amount=4200&currency=usd&destination=acct_1Hetzner";
+    let (op, resource, p) = money(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/transfers",
+        &[],
+        body,
+    )));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("payment", "acct_1Hetzner")
+    );
+    assert_eq!(p["amount_cents"], 4200);
+    assert_eq!(p["recipient"], "acct_1Hetzner");
+}
+
+#[test]
+fn stripe_amounts_outside_usd_cents_are_refused() {
+    let jpy = b"amount=4200&currency=jpy&destination=acct_1";
+    assert!(refused(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/transfers",
+        &[],
+        jpy
+    )))
+    .contains("jpy"));
+    let none = b"amount=4200&destination=acct_1";
+    refused(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/transfers",
+        &[],
+        none,
+    )));
+    let twice = b"amount=1&amount=999999&currency=usd&destination=acct_1";
+    refused(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/transfers",
+        &[],
+        twice,
+    )));
+}
+
+#[test]
+fn a_stripe_payout_without_a_destination_goes_to_the_default_account() {
+    let body = b"amount=10000&currency=usd";
+    let (op, resource, _) = money(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/payouts",
+        &[],
+        body,
+    )));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("payment", "default-external-account")
+    );
+}
+
+#[test]
+fn a_stripe_refund_needs_its_amount() {
+    let body = b"payment_intent=pi_1&amount=500";
+    let (op, _, p) = money(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/refunds",
+        &[],
+        body,
+    )));
+    assert_eq!(op, "refund");
+    assert_eq!(p["amount_cents"], 500);
+    // A whole refund, of an amount the enforcer cannot see.
+    refused(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/refunds",
+        &[],
+        b"payment_intent=pi_1",
+    )));
+}
+
+#[test]
+fn other_stripe_writes_are_refused_and_reads_pass() {
+    refused(typed(&observe(
+        "POST",
+        "api.stripe.com",
+        "/v1/invoices/in_1/pay",
+        &[],
+        b"",
+    )));
+    refused(typed(&observe(
+        "DELETE",
+        "api.stripe.com",
+        "/v1/customers/cus_1",
+        &[],
+        b"",
+    )));
+    assert!(matches!(
+        typed(&observe("GET", "api.stripe.com", "/v1/balance", &[], b"")),
+        Typed::Http(_)
+    ));
+}
+
+// ---- money hosts without an adapter, and everything else
+
+#[test]
+fn a_money_host_without_an_adapter_is_refused_except_for_reads() {
+    let order = br#"{"action":{"type":"order","orders":[]}}"#;
+    refused(typed(&observe(
+        "POST",
+        "API.Hyperliquid.xyz.",
+        "/exchange",
+        &[],
+        order,
+    )));
+    assert!(matches!(
+        typed(&observe("GET", "api.hyperliquid.xyz", "/info", &[], b"")),
+        Typed::Http(_)
+    ));
+    let hosts = Hosts::with(&["pay.example.com"]);
+    assert!(matches!(
+        type_request(
+            &observe("POST", "pay.example.com", "/send", &[], b"{}"),
+            &hosts
+        ),
+        Typed::Refused(_)
+    ));
+}
+
+#[test]
+fn other_requests_are_ordinary_http_requests() {
+    let t = typed(&observe(
+        "POST",
+        "api.github.com",
+        "/repos/a/b/issues",
+        &[],
+        br#"{"title":"x"}"#,
+    ));
+    let Typed::Http(action) = t else {
+        panic!("{t:?}")
+    };
+    assert_eq!(action.operation, "http.request");
+    assert_eq!(action.parameters["body"]["title"], "x");
+}
+
+// ---- EVM
+
+fn rlp_bytes(b: &[u8]) -> Vec<u8> {
+    if b.len() == 1 && b[0] < 0x80 {
+        return b.to_vec();
+    }
+    let mut out = rlp_len(b.len(), 0x80);
+    out.extend_from_slice(b);
+    out
+}
+
+fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let payload: Vec<u8> = items.concat();
+    let mut out = rlp_len(payload.len(), 0xc0);
+    out.extend(payload);
+    out
+}
+
+fn rlp_len(len: usize, base: u8) -> Vec<u8> {
+    if len <= 55 {
+        return vec![base + len as u8];
+    }
+    let bytes: Vec<u8> = len
+        .to_be_bytes()
+        .into_iter()
+        .skip_while(|b| *b == 0)
+        .collect();
+    let mut out = vec![base + 55 + bytes.len() as u8];
+    out.extend(bytes);
+    out
+}
+
+fn int(n: u128) -> Vec<u8> {
+    rlp_bytes(
+        &n.to_be_bytes()
+            .into_iter()
+            .skip_while(|b| *b == 0)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn addr(a: &str) -> Vec<u8> {
+    hex::decode(a.trim_start_matches("0x")).unwrap()
+}
+
+fn eip1559(chain: u128, to: &str, value: u128, data: &[u8]) -> String {
+    let fields = vec![
+        int(chain),
+        int(7),
+        int(1_000_000_000),
+        int(30_000_000_000),
+        int(60_000),
+        rlp_bytes(&addr(to)),
+        int(value),
+        rlp_bytes(data),
+        rlp_list(&[]),
+        int(1),
+        rlp_bytes(&[0x11; 32]),
+        rlp_bytes(&[0x22; 32]),
+    ];
+    let mut raw = vec![0x02];
+    raw.extend(rlp_list(&fields));
+    format!("0x{}", hex::encode(raw))
+}
+
+fn legacy(chain: u128, to: &str, value: u128) -> String {
+    let fields = vec![
+        int(3),
+        int(20_000_000_000),
+        int(21_000),
+        rlp_bytes(&addr(to)),
+        int(value),
+        rlp_bytes(&[]),
+        int(chain * 2 + 35),
+        rlp_bytes(&[0x11; 32]),
+        rlp_bytes(&[0x22; 32]),
+    ];
+    format!("0x{}", hex::encode(rlp_list(&fields)))
+}
+
+fn erc20(selector: &str, who: &str, amount: u128) -> Vec<u8> {
+    let mut data = hex::decode(selector).unwrap();
+    data.extend([0u8; 12]);
+    data.extend(addr(who));
+    data.extend([0u8; 16]);
+    data.extend(amount.to_be_bytes());
+    data
+}
+
+fn send_raw(raw: &str) -> Vec<u8> {
+    json!({"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[raw]})
+        .to_string()
+        .into_bytes()
+}
+
+const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const HETZNER: &str = "0x00000000000000000000000000000000000000aa";
+
+#[test]
+fn an_erc20_transfer_is_a_token_transfer_on_any_rpc_host() {
+    let raw = eip1559(8453, USDC_BASE, 0, &erc20("a9059cbb", HETZNER, 42_500_000));
+    let body = send_raw(&raw);
+    let (op, resource, p) = money(typed(&observe(
+        "POST",
+        "some-rpc.example.net",
+        "/v2/key",
+        &[],
+        &body,
+    )));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("token.transfer", HETZNER)
+    );
+    assert_eq!(p["chain"], "base");
+    assert_eq!(p["token"], "USDC");
+    assert_eq!(p["amount_micro"], 42_500_000);
+}
+
+#[test]
+fn a_native_transfer_rounds_up_to_millionths() {
+    // 0.0100000000001 ETH: a hair over 10_000 millionths.
+    let raw = legacy(1, HETZNER, 10_000_000_000_000_100);
+    let body = send_raw(&raw);
+    let (op, _, p) = money(typed(&observe("POST", "eth.llamarpc.com", "/", &[], &body)));
+    assert_eq!(op, "token.transfer");
+    assert_eq!(
+        (p["chain"].as_str(), p["token"].as_str()),
+        (Some("ethereum"), Some("ETH"))
+    );
+    assert_eq!(p["amount_micro"], 10_001);
+}
+
+#[test]
+fn an_approval_is_a_token_approval_and_other_calls_are_contract_calls() {
+    let raw = eip1559(8453, USDC_BASE, 0, &erc20("095ea7b3", HETZNER, 5_000_000));
+    let (op, _, p) = money(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw))));
+    assert_eq!(op, "token.approve");
+    assert_eq!(p["spender"], HETZNER);
+
+    let raw = eip1559(
+        8453,
+        HETZNER,
+        2_000_000_000_000,
+        &hex::decode("3593564c0000").unwrap(),
+    );
+    let (op, _, p) = money(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw))));
+    assert_eq!(op, "contract.call");
+    assert_eq!(p["function"], "0x3593564c");
+    assert_eq!(p["value_micro"], 2);
+}
+
+#[test]
+fn transactions_that_cannot_be_compared_are_refused() {
+    // A token whose decimals are unknown.
+    let raw = eip1559(8453, HETZNER, 0, &erc20("a9059cbb", HETZNER, 1));
+    assert!(
+        refused(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw)))).contains("decimals")
+    );
+    // An unlimited approval.
+    let raw = eip1559(8453, USDC_BASE, 0, &erc20("095ea7b3", HETZNER, u128::MAX));
+    refused(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw))));
+    // Not RLP.
+    refused(typed(&observe(
+        "POST",
+        "rpc",
+        "/",
+        &[],
+        &send_raw("0x02ff"),
+    )));
+    // Contract creation.
+    let mut fields = vec![int(1); 5];
+    fields.extend([
+        rlp_bytes(&[]),
+        int(0),
+        rlp_bytes(&[1, 2]),
+        rlp_list(&[]),
+        int(0),
+        int(1),
+        int(1),
+    ]);
+    let mut raw = vec![0x02];
+    raw.extend(rlp_list(&fields));
+    let raw = format!("0x{}", hex::encode(raw));
+    assert!(refused(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw)))).contains("creates"));
+}
+
+#[test]
+fn sending_or_signing_out_of_sight_is_refused_and_reads_pass() {
+    let send =
+        json!({"jsonrpc":"2.0","id":1,"method":"eth_sendTransaction","params":[{}]}).to_string();
+    refused(typed(&observe("POST", "rpc", "/", &[], send.as_bytes())));
+    let raw = legacy(1, HETZNER, 1);
+    let batch = json!([
+        {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]},
+        {"jsonrpc":"2.0","id":2,"method":"eth_sendRawTransaction","params":[raw]}
+    ])
+    .to_string();
+    assert!(refused(typed(&observe("POST", "rpc", "/", &[], batch.as_bytes()))).contains("batch"));
+    let read =
+        json!({"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[HETZNER,"latest"]})
+            .to_string();
+    assert!(matches!(
+        typed(&observe("POST", "rpc", "/", &[], read.as_bytes())),
+        Typed::Http(_)
+    ));
+}
+
+#[test]
+fn millionths_round_up_and_overflow_is_none() {
+    assert_eq!(evm::micro(1, 18), Some(1));
+    assert_eq!(evm::micro(1_000_000_000_000, 18), Some(1));
+    assert_eq!(evm::micro(1_000_000_000_001, 18), Some(2));
+    assert_eq!(evm::micro(5, 2), Some(50_000));
+    assert_eq!(evm::micro(u128::MAX, 6), None);
+}
+
+// ---- x402
+
+fn x402_v2(amount: &str, signed: &str, pay_to: &str) -> String {
+    let payment = json!({
+        "x402Version": 2,
+        "accepted": {"scheme": "exact", "network": "eip155:8453", "amount": amount,
+                     "asset": USDC_BASE, "payTo": pay_to, "maxTimeoutSeconds": 60},
+        "payload": {"signature": "0x00",
+                    "authorization": {"from": HETZNER, "to": pay_to, "value": signed,
+                                      "validAfter": "0", "validBefore": "9999999999", "nonce": "0x01"}}
+    });
+    base64::engine::general_purpose::STANDARD.encode(payment.to_string())
+}
+
+#[test]
+fn an_x402_payment_is_typed_from_its_header() {
+    let header = x402_v2(
+        "250000",
+        "250000",
+        "0x00000000000000000000000000000000000000bb",
+    );
+    let headers = [("Payment-Signature", header.as_str())];
+    let (op, resource, p) = money(typed(&observe(
+        "GET",
+        "data.example.com",
+        "/report",
+        &headers,
+        b"",
+    )));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("x402.pay", "data.example.com")
+    );
+    assert_eq!(p["asset"], "USDC");
+    assert_eq!(p["amount_micro"], 250_000);
+}
+
+#[test]
+fn an_x402_payment_that_signs_other_terms_or_names_no_asset_is_refused() {
+    let header = x402_v2(
+        "250000",
+        "9000000",
+        "0x00000000000000000000000000000000000000bb",
+    );
+    let headers = [("payment-signature", header.as_str())];
+    assert!(refused(typed(&observe(
+        "GET",
+        "data.example.com",
+        "/",
+        &headers,
+        b""
+    )))
+    .contains("differs"));
+    let v1 = base64::engine::general_purpose::STANDARD.encode(
+        json!({"x402Version":1,"scheme":"exact","network":"base","payload":{}}).to_string(),
+    );
+    let headers = [("X-PAYMENT", v1.as_str())];
+    assert!(refused(typed(&observe(
+        "GET",
+        "data.example.com",
+        "/",
+        &headers,
+        b""
+    )))
+    .contains("version 1"));
+    let headers = [("X-PAYMENT", "not base64 !")];
+    refused(typed(&observe(
+        "GET",
+        "data.example.com",
+        "/",
+        &headers,
+        b"",
+    )));
+}
+
+/// Signed by Foundry's `cast mktx` with Anvil's first public test key, so the
+/// decoder is checked against transactions a real wallet produces.
+#[test]
+fn transactions_signed_by_a_real_wallet_decode() {
+    let erc20 = "0x02f8b182210580843b9aca00847735940082ea6094833589fcd6edb6e08f4c7c32d4f71b54bda0291380b844a9059cbb00000000000000000000000000000000000000000000000000000000000000aa0000000000000000000000000000000000000000000000000000000002887fa0c001a0e3e87539cd880a87ad2a1278de834d275d94a36f543fb307b32dba2625c61c33a05d712c1301f23b29999491d8e1d25e7150c658da46755febfef3b6a0a7d4da64";
+    let (op, resource, p) = money(typed(&observe(
+        "POST",
+        "mainnet.base.org",
+        "/",
+        &[],
+        &send_raw(erc20),
+    )));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("token.transfer", HETZNER)
+    );
+    assert_eq!(
+        (p["chain"].as_str(), p["token"].as_str()),
+        (Some("base"), Some("USDC"))
+    );
+    assert_eq!(p["amount_micro"], 42_500_000);
+
+    // Legacy, EIP-155 on chain 1, 0.01 ETH.
+    let native = "0xf86b058504a817c8008252089400000000000000000000000000000000000000aa872386f26fc100008026a02ad51b773b43e433a3285cb1982a31a2d4766db69e93a90165cbd06d6486d018a00658e727910ff9e3e430a555b6a8875fedeb8058f850d78e0dddc7e2e502d9a0";
+    let (op, _, p) = money(typed(&observe(
+        "POST",
+        "eth.llamarpc.com",
+        "/",
+        &[],
+        &send_raw(native),
+    )));
+    assert_eq!(op, "token.transfer");
+    assert_eq!(
+        (p["chain"].as_str(), p["token"].as_str()),
+        (Some("ethereum"), Some("ETH"))
+    );
+    assert_eq!(p["amount_micro"], 10_000);
+}

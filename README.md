@@ -104,6 +104,31 @@ its new place with the state it ended on. The ledger is trusted storage: a host
 that can rewrite the file can roll the state back, and a verifier that accepts
 each proven batch only where the last one ended is what detects that.
 
+## Typing requests, and reading tool calls
+
+`enforce/` (`trusted-rail-enforce`, a separate package that never reaches the proof guest) is
+what an enforcer on the network needs around the engine. A mandate's money templates read typed
+actions (`payment`, `token.transfer`, `x402.pay`, ...); an enforcer observes HTTP requests.
+`type_request` turns one observed request into the action to decide:
+
+- **Adapters** type the requests that can move money: Stripe transfers, payouts and refunds
+  (`stripe`); signed EVM transactions sent through any JSON-RPC endpoint, as native or ERC-20
+  transfers, ERC-20 approvals or contract calls (`evm`); and x402 version 2 payment headers on
+  any host (`x402`).
+- **Refused**: a request to a money host (`MONEY_HOSTS`, plus the enforcer's own) that no adapter
+  types and that is not a read; and anything an adapter cannot compare with a limit: another
+  currency, a token without known decimals, an amount that does not fit, a call that signs
+  elsewhere (`eth_sendTransaction`, `personal_sign`, ...), an x402 version 1 header, which names
+  no asset.
+- Everything else is an ordinary `http.request`.
+
+Amounts are rounded up, so a limit is never passed by rounding.
+
+`toolcalls` reads the tool calls in a model's replies as they stream (Anthropic Messages, OpenAI
+Chat Completions, OpenAI Responses), and the calls and results the next request resends; `Open`
+links an outbound request to the calls still running. A tool call is what the model asked for,
+not what the sandbox sent: it is evidence for the record, never the basis of a decision.
+
 ## What is proved
 
 `guest/src/main.rs` reads the policy/request witness, calls `evaluate_witness`
