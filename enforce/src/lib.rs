@@ -38,6 +38,10 @@ const BUILTIN: &[(&str, &str)] = &[
         include_str!("../adapters/crypto/evm.json"),
     ),
     (
+        "broker/alpaca.json",
+        include_str!("../adapters/broker/alpaca.json"),
+    ),
+    (
         "payments/stripe.json",
         include_str!("../adapters/payments/stripe.json"),
     ),
@@ -376,8 +380,10 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
         return Typed::Refused(format!("model request: {reason}"));
     }
     let document = |input: Value| {
+        let segments: Vec<&str> = request.path.split('/').filter(|s| !s.is_empty()).collect();
         json!({"request": {"method": request.method.to_ascii_uppercase(), "host": name,
-                           "path": request.path, "query": request.query}, "input": input})
+                           "path": request.path, "segments": segments,
+                           "query": request.query}, "input": input})
     };
     let covers = |a: &Loaded| a.hosts.is_empty() || a.hosts.contains(&name);
     for a in adapters
@@ -675,9 +681,10 @@ fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Opti
                 Err(reason) => return Some(refused(a, &reason)),
             }
         }
+        // A field that is absent reads as null, so `[null]` matches it.
         let holds = |is: &spec::Is| {
-            doc.pointer(&is.at)
-                .is_some_and(|v| is.is.iter().any(|x| same(v, x, is.case)))
+            let v = doc.pointer(&is.at).unwrap_or(&Value::Null);
+            is.is.iter().any(|x| same(v, x, is.case))
         };
         if !when.fields.iter().all(holds) {
             continue;
@@ -686,11 +693,26 @@ fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Opti
             return Some(refused(a, reason));
         }
         for require in &action.require {
-            let ok = match (&require.at, &require.one_of, &require.same) {
-                (Some(at), Some(values), None) => doc
-                    .pointer(at)
-                    .is_some_and(|v| values.iter().any(|x| same(v, x, require.case))),
-                (None, None, Some([x, y])) => match (doc.pointer(x), doc.pointer(y)) {
+            let ok = match (
+                &require.at,
+                &require.one_of,
+                &require.matches,
+                &require.same,
+            ) {
+                (Some(at), Some(values), None, None) => {
+                    let v = doc.pointer(at).unwrap_or(&Value::Null);
+                    values.iter().any(|x| same(v, x, require.case))
+                }
+                (Some(at), None, Some(pattern), None) => {
+                    match (
+                        doc.pointer(at).and_then(Value::as_str),
+                        whole_pattern(pattern),
+                    ) {
+                        (Some(text), Ok(re)) => re.is_match(text),
+                        _ => false,
+                    }
+                }
+                (None, None, None, Some([x, y])) => match (doc.pointer(x), doc.pointer(y)) {
                     (Some(x), Some(y)) => !x.is_null() && same(x, y, require.case),
                     _ => false,
                 },
@@ -835,8 +857,20 @@ fn convert_value(
                 Some(d) => d,
                 None => token()?.decimals,
             };
-            let (mantissa, fraction) = decimal(&value).ok_or("not an amount")?;
-            let m = micro(mantissa, decimals + fraction).ok_or("an amount too large to compare")?;
+            let (mut mantissa, mut scale) = decimal(&value).ok_or("not an amount")?;
+            scale += decimals;
+            if let Some(p) = &source.times {
+                let factor = doc
+                    .pointer(p)
+                    .filter(|v| !v.is_null())
+                    .ok_or("its factor is not in the request")?;
+                let (m, f) = decimal(factor).ok_or("its factor is not an amount")?;
+                mantissa = mantissa
+                    .checked_mul(m)
+                    .ok_or("an amount too large to compare")?;
+                scale += f;
+            }
+            let m = micro(mantissa, scale).ok_or("an amount too large to compare")?;
             if m == 0 && !source.or_zero {
                 return Err("an amount of nothing".into());
             }
@@ -935,6 +969,18 @@ fn host(h: &str) -> String {
     h.trim_end_matches('.').to_ascii_lowercase()
 }
 
+/// A definition's pattern, matched against the whole value. Patterns are
+/// small and the engine runs in linear time.
+fn whole_pattern(pattern: &str) -> Result<regex::Regex, String> {
+    if pattern.len() > 256 {
+        return Err("longer than 256 characters".into());
+    }
+    regex::RegexBuilder::new(&format!("^(?:{pattern})$"))
+        .size_limit(1 << 16)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 fn valid(s: &str) -> bool {
     !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
 }
@@ -1024,13 +1070,22 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
             _ => return Err(at("give exactly one of operation and refuse".into())),
         }
         for require in &action.require {
-            match (&require.at, &require.one_of, &require.same) {
-                (Some(p), Some(_), None) => pointer(p).map_err(at)?,
-                (None, None, Some([x, y])) => {
+            match (
+                &require.at,
+                &require.one_of,
+                &require.matches,
+                &require.same,
+            ) {
+                (Some(p), Some(_), None, None) => pointer(p).map_err(at)?,
+                (Some(p), None, Some(pattern), None) => {
+                    pointer(p).map_err(at)?;
+                    whole_pattern(pattern).map_err(|e| at(format!("pattern {pattern}: {e}")))?;
+                }
+                (None, None, None, Some([x, y])) => {
                     pointer(x).map_err(at)?;
                     pointer(y).map_err(at)?;
                 }
-                _ => return Err(at("a check is either at and in, or same".into())),
+                _ => return Err(at("a check is at and in, at and matches, or same".into())),
             }
             if !valid(&require.reason) {
                 return Err(at("a check needs a reason".into()));
@@ -1065,7 +1120,13 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
                 Some(Convert::TokenSymbol) if source.token.is_none() => {
                     return Err(at("token_symbol needs token"))
                 }
+                _ if source.times.is_some() && source.convert != Some(Convert::Micro) => {
+                    return Err(at("times is for micro"))
+                }
                 _ => {}
+            }
+            if let Some(p) = &source.times {
+                pointer(p).map_err(|e| at(&e))?;
             }
             if let Some(t) = &source.token {
                 pointer(&t.chain).map_err(|e| at(&e))?;

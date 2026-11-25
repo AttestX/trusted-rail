@@ -179,6 +179,9 @@ pub struct Require {
     pub at: Option<String>,
     #[serde(default, rename = "in")]
     pub one_of: Option<Vec<Value>>,
+    /// The text at `at` must match this regular expression, whole.
+    #[serde(default)]
+    pub matches: Option<String>,
     /// The two values must be equal.
     #[serde(default)]
     pub same: Option<[String; 2]>,
@@ -212,6 +215,10 @@ pub struct Source {
     /// For `micro` and `token_symbol`: where the token is named.
     #[serde(default)]
     pub token: Option<TokenAt>,
+    /// For `micro`: multiply by the decimal at this pointer (a quantity
+    /// times a price), rounding the product up.
+    #[serde(default)]
+    pub times: Option<String>,
     /// For `count` and `micro`: allow zero.
     #[serde(default)]
     pub or_zero: bool,

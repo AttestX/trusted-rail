@@ -10,6 +10,7 @@ loaded. Adding an API is a JSON file in its category's folder, an entry in `BUIL
 ```
 adapters/
   common.json                 categories, sensitive hosts by category, chains, tokens
+  broker/alpaca.json          Alpaca orders (stocks, crypto in USD), cancels, closes
   crypto/evm.json             signed EVM transactions, on any RPC host
   payments/stripe.json        Stripe transfers, payouts, refunds
   payments/x402.json          x402 version 2 payments, on any host
@@ -21,7 +22,7 @@ adapters/
 |---|---|---|---|---|
 | `crypto` | 6619 | `evm` | Solana, Bitcoin; custodian signing (Privy, Turnkey, CDP); signed orders and permits (Permit2, CoW Swap, 0x) | `token.transfer`, `token.approve`, `contract.call`, `sign.typed_data` |
 | `exchange` | 6611, 6612 | Sensitive hosts only: unadapted writes refused | Hyperliquid, Binance, OKX, Bybit, Coinbase, Kraken | `order.place`; withdrawals as `token.transfer` |
-| `broker` | 6612 | None | Alpaca, then IBKR, Tradier | `order.place`; cash out as `payment` |
+| `broker` | 6612 | `alpaca`; sensitive hosts (Alpaca Broker API, Tradier, tastytrade, Schwab, IBKR, Robinhood) | IBKR, Tradier | `order.place`, `order.cancel`, `position.close`; cash out as `payment` |
 | `bank` | 641 | Sensitive hosts only (Wise) | Plaid Transfer, Modern Treasury, open banking | `payment` |
 | `payments` | 6619 | `stripe`, `x402`, `x402-v1`; sensitive hosts (PayPal, Square, Adyen) | PayPal, Square, Adyen; card authorization | `payment`, `refund`, `x402.pay`, `card.spend` |
 | `commerce` | 47, 4790, 5232, 5540, 79 | None | Payment-provider checkout hosts; Shopify, Amazon SP-API, Duffel | `purchase`, `store.change` |
@@ -61,7 +62,10 @@ every category. ISIC has no class for crypto-assets or payment processing, so `c
 | `unmatched` | `refuse` (the default) or `pass`: what a covered request no action matches becomes |
 | `actions` | Tried in order; the first whose `when` holds decides |
 
-Each action reads a document: `{"request": {"method", "host", "path", "query"}, "input": ...}`.
+Each action reads a document: `{"request": {"method", "host", "path", "segments", "query"}, "input": ...}`.
+`segments` is the path split at `/` (`/v2/positions/NVDA` → `["v2", "positions", "NVDA"]`), so a
+name in the path can be a parameter (`/request/segments/2`). A `json` request without a body
+reads as `{}`. A field that is absent reads as `null`, so `[null]` in `is` or `in` matches it.
 For a transaction, `input` is `{"method", "chain_id", "from", "to", "value", "data", "selector"}`
 (`from` is the sender recovered from the signature; a signature that recovers none is refused), plus
 `args` once `when.function` matches.
@@ -71,14 +75,37 @@ For a transaction, `input` is `{"method", "chain_id", "from", "to", "value", "da
 | `when` | `method`, `path` (`*` is one segment), `function` (a canonical signature, such as `transfer(address,uint256)`; any ABI argument types, read as JSON: addresses and bytes in lower-case hex, numbers as decimal text, lists as arrays), `fields` (`[{at, is, case}]`). All must hold |
 | `refuse` | Refuse what matches, for this reason. Or: |
 | `operation`, `resource` | The action, and which of its parameters is the resource |
-| `require` | `[{at, in, case, reason}]` or `[{same: [a, b], case, reason}]`: refused with `reason` unless it holds |
+| `require` | `[{at, in, case, reason}]`, `[{at, matches, reason}]` (text that matches the regular expression, whole; at most 256 characters, linear-time, ASCII) or `[{same: [a, b], case, reason}]`: refused with `reason` unless it holds |
 | `parameters` | Name → source. A source is one of `at` (a JSON pointer), `first` (the first pointer with a value) or `const`, with an optional `default`, and `as` |
 
 `as` reads the value: `text` (the default), `lower`, `count` (a positive whole number),
 `micro` (millionths, from whole or decimal text in units of `decimals` or of the `token`'s,
 rounded up), `token_symbol` (from `token` alone), `chain_name`, `native_symbol`, `function`.
-`or_zero` allows zero for `count` and `micro`. A value that is missing or cannot be read refuses
+`times` (a pointer, `micro` only) multiplies by the decimal there, as a quantity times a price,
+rounding the product up. `or_zero` allows zero for `count` and `micro`. A value that is missing or cannot be read refuses
 the request; nothing is guessed.
+
+## `broker/alpaca.json`
+
+[Alpaca's Trading API](https://docs.alpaca.markets/reference/postorder), live
+(`api.alpaca.markets`) and paper (`paper-api.alpaca.markets`): US stocks and crypto. Every order
+is typed as `order.place` on its symbol (lower case), with `side`, `order_type`, `venue` (the host,
+so a mandate can tell paper from live) and `amount_micro`, its value in millionths of a US dollar:
+
+| Order | `amount_micro` |
+|---|---|
+| `market` by `notional` | the notional |
+| `limit` or `stop_limit` by `qty` | `qty` × `limit_price`, rounded up; also `quantity_micro` and `limit_price_micro` |
+| `market`, `stop` or `trailing_stop` by `qty` | none: refused, since no price in the request bounds it. A position is closed with the close call instead |
+
+Refused too: bracket, OCO, OTO and multi-leg orders (several orders in one request); options
+symbols, asset ids, and crypto pairs not quoted in USD (their amounts are not in dollars);
+replacing an order (`PATCH`: cancel and place a new one); exercising an option (it pays the
+strike, which the request does not state); account settings (margin, shorting, options level);
+withdrawal addresses. `DELETE /v2/orders[/{id}]` is `order.cancel` and `DELETE
+/v2/positions[/{symbol}]` is `position.close` (`all` for every one). Any other write, watchlists
+among them, is refused; reads pass. Alpaca's Broker API, which can move money out, has no adapter,
+so its writes are refused as a sensitive host.
 
 ## `security/model-requests.json`
 

@@ -9,6 +9,8 @@ description = "What an enforcer needs around trusted-rail: typing requests to mo
 [workspace]
 
 [dependencies]
+# Linear time, no backtracking: a definition's pattern cannot stall a request.
+regex = { version = "1", default-features = false, features = ["std"] }
 trusted-rail = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

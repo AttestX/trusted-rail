@@ -19,6 +19,11 @@
       "api.squareup.com",
       "api.adyen.com"
     ],
+    "broker": [
+      "broker-api.alpaca.markets", "broker-api.sandbox.alpaca.markets",
+      "api.tradier.com", "api.tastyworks.com", "api.tastytrade.com",
+      "api.schwabapi.com", "api.ibkr.com", "api.robinhood.com"
+    ],
     "bank": [
       "api.wise.com"
     ],

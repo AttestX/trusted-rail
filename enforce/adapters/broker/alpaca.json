@@ -1,0 +1,104 @@
+{
+  "id": "alpaca",
+  "category": "broker",
+  "summary": "Alpaca's Trading API, live and paper: US stocks and crypto. An order is typed with its value in US dollars: the notional of a market order, or qty times limit_price for a limit or stop-limit order. An order whose value the request does not state (market, stop or trailing-stop by quantity) is refused; positions are closed by the close call instead. Bracket, OCO, OTO and multi-leg orders, options, and crypto pairs not quoted in USD are refused. Cancels and closes are typed. Replacing an order, exercising an option, changing account settings and withdrawal addresses are refused. Reads pass.",
+  "input": "json",
+  "hosts": ["api.alpaca.markets", "paper-api.alpaca.markets"],
+  "unmatched": "refuse",
+  "actions": [
+    {
+      "when": {"method": "PATCH", "path": "/v2/orders/*"},
+      "refuse": "replacing an order changes it out of sight: cancel it and place a new one"
+    },
+    {
+      "when": {"method": "POST", "path": "/v2/orders", "fields": [{"at": "/input/qty", "is": [null]}]},
+      "require": [
+        {"at": "/input/order_class", "in": [null, "", "simple"], "case": "any", "reason": "bracket, OCO, OTO and multi-leg orders are not typed: place each order on its own"},
+        {"at": "/input/type", "in": ["market"], "case": "any", "reason": "an order by notional must be a market order"},
+        {"at": "/input/symbol", "matches": "[A-Za-z][A-Za-z.]{0,11}|[A-Za-z0-9]{2,10}/[Uu][Ss][Dd]", "reason": "a symbol that is not a stock or a crypto pair quoted in USD (options, other quotes and asset ids are not typed)"},
+        {"at": "/input/side", "in": ["buy", "sell"], "case": "any", "reason": "an order that is neither a buy nor a sell"}
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {"at": "/input/symbol", "as": "lower"},
+        "side": {"at": "/input/side", "as": "lower"},
+        "order_type": {"at": "/input/type", "as": "lower"},
+        "amount_micro": {"at": "/input/notional", "as": "micro", "decimals": 0},
+        "currency": {"const": "usd"},
+        "venue": {"at": "/request/host"},
+        "rail": {"const": "alpaca"}
+      }
+    },
+    {
+      "when": {"method": "POST", "path": "/v2/orders", "fields": [{"at": "/input/type", "is": ["limit", "stop_limit"], "case": "any"}]},
+      "require": [
+        {"at": "/input/order_class", "in": [null, "", "simple"], "case": "any", "reason": "bracket, OCO, OTO and multi-leg orders are not typed: place each order on its own"},
+        {"at": "/input/notional", "in": [null], "reason": "an order gives qty or notional, not both"},
+        {"at": "/input/symbol", "matches": "[A-Za-z][A-Za-z.]{0,11}|[A-Za-z0-9]{2,10}/[Uu][Ss][Dd]", "reason": "a symbol that is not a stock or a crypto pair quoted in USD (options, other quotes and asset ids are not typed)"},
+        {"at": "/input/side", "in": ["buy", "sell"], "case": "any", "reason": "an order that is neither a buy nor a sell"}
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {"at": "/input/symbol", "as": "lower"},
+        "side": {"at": "/input/side", "as": "lower"},
+        "order_type": {"at": "/input/type", "as": "lower"},
+        "amount_micro": {"at": "/input/qty", "as": "micro", "decimals": 0, "times": "/input/limit_price"},
+        "quantity_micro": {"at": "/input/qty", "as": "micro", "decimals": 0},
+        "limit_price_micro": {"at": "/input/limit_price", "as": "micro", "decimals": 0},
+        "currency": {"const": "usd"},
+        "venue": {"at": "/request/host"},
+        "rail": {"const": "alpaca"}
+      }
+    },
+    {
+      "when": {"method": "POST", "path": "/v2/orders"},
+      "refuse": "an order whose value is not stated (market, stop or trailing-stop by quantity): give notional for a market order, or use a limit order; close a position with DELETE /v2/positions/{symbol}"
+    },
+    {
+      "when": {"method": "DELETE", "path": "/v2/orders"},
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {"order": {"const": "all"}, "venue": {"at": "/request/host"}, "rail": {"const": "alpaca"}}
+    },
+    {
+      "when": {"method": "DELETE", "path": "/v2/orders/*"},
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {"order": {"at": "/request/segments/2", "as": "lower"}, "venue": {"at": "/request/host"}, "rail": {"const": "alpaca"}}
+    },
+    {
+      "when": {"method": "DELETE", "path": "/v2/positions"},
+      "operation": "position.close",
+      "resource": "symbol",
+      "parameters": {"symbol": {"const": "all"}, "venue": {"at": "/request/host"}, "rail": {"const": "alpaca"}}
+    },
+    {
+      "when": {"method": "DELETE", "path": "/v2/positions/*"},
+      "operation": "position.close",
+      "resource": "symbol",
+      "parameters": {"symbol": {"at": "/request/segments/2", "as": "lower"}, "venue": {"at": "/request/host"}, "rail": {"const": "alpaca"}}
+    },
+    {
+      "when": {"method": "POST", "path": "/v2/positions/*/exercise"},
+      "refuse": "exercising an option buys or sells shares at its strike, an amount the request does not state"
+    },
+    {
+      "when": {"path": "/v2/account/configurations"},
+      "refuse": "account settings (margin, shorting, options level, trade suspension) are the owner's to change"
+    },
+    {
+      "when": {"path": "/v2/wallets/whitelists"},
+      "refuse": "crypto withdrawal addresses are the owner's to change"
+    },
+    {
+      "when": {"path": "/v2/wallets/whitelists/*"},
+      "refuse": "crypto withdrawal addresses are the owner's to change"
+    },
+    {
+      "when": {"path": "/v2/wallets/transfers"},
+      "refuse": "moving crypto out of the account is not typed"
+    }
+  ]
+}
