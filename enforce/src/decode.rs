@@ -36,6 +36,10 @@ pub fn json_body(body: &[u8]) -> Result<Value, String> {
     if body.len() > MAX_INPUT_BYTES {
         return Err("the body is too large to read".into());
     }
+    // No body (a DELETE, say) reads as an empty object: every field absent.
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Value::Object(Map::new()));
+    }
     serde_json::from_slice(body).map_err(|_| "the body is not JSON".into())
 }
 

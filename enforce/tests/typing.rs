@@ -768,3 +768,222 @@ fn calls_with_dynamic_arguments_are_read() {
     );
     assert!(trusted_rail_enforce::decode::signature("transfer(address to, uint256)").is_err());
 }
+
+// ---- Alpaca (broker)
+
+const ALPACA: &str = "paper-api.alpaca.markets";
+
+fn order(body: Value) -> Typed {
+    typed(&observe(
+        "POST",
+        ALPACA,
+        "/v2/orders",
+        &[],
+        body.to_string().as_bytes(),
+    ))
+}
+
+#[test]
+fn an_alpaca_market_order_by_notional_is_an_order_of_that_value() {
+    let (op, resource, p) = money(order(json!({
+        "symbol": "NVDA", "notional": "1500.25", "side": "buy",
+        "type": "market", "time_in_force": "day"
+    })));
+    assert_eq!((op.as_str(), resource.as_str()), ("order.place", "nvda"));
+    assert_eq!(p["amount_micro"], 1_500_250_000u64);
+    assert_eq!(p["side"], "buy");
+    assert_eq!(p["currency"], "usd");
+    assert_eq!(p["venue"], ALPACA);
+    // A crypto pair quoted in USD is an order in USD too.
+    let (_, resource, p) = money(order(json!({
+        "symbol": "BTC/USD", "notional": "20", "side": "sell", "type": "market",
+        "time_in_force": "ioc"
+    })));
+    assert_eq!(resource, "btc/usd");
+    assert_eq!(p["amount_micro"], 20_000_000u64);
+}
+
+#[test]
+fn an_alpaca_limit_order_is_worth_its_quantity_times_its_limit() {
+    let (op, resource, p) = money(order(json!({
+        "symbol": "AAPL", "qty": "3.5", "side": "buy", "type": "limit",
+        "limit_price": "187.333", "time_in_force": "day", "order_class": "simple"
+    })));
+    assert_eq!((op.as_str(), resource.as_str()), ("order.place", "aapl"));
+    // 3.5 x 187.333 = 655.6655, in millionths, rounded up.
+    assert_eq!(p["amount_micro"], 655_665_500u64);
+    assert_eq!(p["quantity_micro"], 3_500_000u64);
+    assert_eq!(p["limit_price_micro"], 187_333_000u64);
+    // A quantity given as a number, and a stop-limit, the same.
+    let (_, _, p) = money(order(json!({
+        "symbol": "BRK.B", "qty": 2, "side": "sell", "type": "stop_limit",
+        "stop_price": "400", "limit_price": "399.99", "time_in_force": "gtc"
+    })));
+    assert_eq!(p["amount_micro"], 799_980_000u64);
+    // Products are rounded up, never down.
+    let (_, _, p) = money(order(json!({
+        "symbol": "F", "qty": "0.0000001", "side": "buy", "type": "limit",
+        "limit_price": "1.01", "time_in_force": "day"
+    })));
+    assert_eq!(p["amount_micro"], 1u64);
+}
+
+#[test]
+fn an_alpaca_order_whose_value_is_not_stated_is_refused() {
+    for (body, why) in [
+        (
+            json!({"symbol": "NVDA", "qty": "10", "side": "buy", "type": "market", "time_in_force": "day"}),
+            "not stated",
+        ),
+        (
+            json!({"symbol": "NVDA", "qty": "10", "side": "buy", "type": "stop", "stop_price": "100", "time_in_force": "day"}),
+            "not stated",
+        ),
+        (
+            json!({"symbol": "NVDA", "qty": "10", "side": "sell", "type": "trailing_stop", "trail_percent": "2", "time_in_force": "day"}),
+            "not stated",
+        ),
+        (
+            json!({"symbol": "NVDA", "notional": "100", "side": "buy", "type": "limit", "limit_price": "100", "time_in_force": "day"}),
+            "market order",
+        ),
+        (
+            json!({"symbol": "NVDA", "qty": "1", "notional": "100", "side": "buy", "type": "limit", "limit_price": "100", "time_in_force": "day"}),
+            "not both",
+        ),
+        (
+            json!({"symbol": "NVDA", "qty": "1", "side": "buy", "type": "limit", "time_in_force": "day"}),
+            "factor",
+        ),
+        (
+            json!({"symbol": "NVDA", "qty": "1", "side": "buy", "type": "limit", "limit_price": "100", "order_class": "bracket",
+                "take_profit": {"limit_price": "120"}, "stop_loss": {"stop_price": "90"}, "time_in_force": "day"}),
+            "bracket",
+        ),
+        (
+            json!({"qty": "1", "type": "limit", "limit_price": "1", "order_class": "mleg", "time_in_force": "day",
+                "legs": [{"symbol": "AAPL250620C00200000", "ratio_qty": "1", "side": "buy"}]}),
+            "multi-leg",
+        ),
+        (
+            json!({"symbol": "AAPL250620C00200000", "qty": "1", "side": "buy", "type": "limit", "limit_price": "2", "time_in_force": "day"}),
+            "options",
+        ),
+        (
+            json!({"symbol": "ETH/BTC", "notional": "1", "side": "buy", "type": "market", "time_in_force": "gtc"}),
+            "quoted in USD",
+        ),
+        (
+            json!({"symbol": "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415", "notional": "1", "side": "buy", "type": "market", "time_in_force": "day"}),
+            "asset ids",
+        ),
+        (
+            json!({"symbol": "NVDA", "notional": "1", "side": "short", "type": "market", "time_in_force": "day"}),
+            "neither",
+        ),
+        (json!({}), "notional"),
+    ] {
+        let reason = refused(order(body.clone()));
+        assert!(
+            reason.starts_with("alpaca: ") && reason.contains(why),
+            "{body}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn alpaca_cancels_and_closes_are_typed_and_account_changes_refused() {
+    let call =
+        |method: &'static str, path: &'static str| typed(&observe(method, ALPACA, path, &[], b""));
+    let (op, resource, _) = money(call("DELETE", "/v2/orders"));
+    assert_eq!((op.as_str(), resource.as_str()), ("order.cancel", "all"));
+    let (op, resource, _) = money(call(
+        "DELETE",
+        "/v2/orders/61E69015-8549-4bfd-b9c3-01e75843f47d",
+    ));
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("order.cancel", "61e69015-8549-4bfd-b9c3-01e75843f47d")
+    );
+    let (op, resource, _) = money(call("DELETE", "/v2/positions"));
+    assert_eq!((op.as_str(), resource.as_str()), ("position.close", "all"));
+    let (op, resource, p) = money(call("DELETE", "/v2/positions/NVDA"));
+    assert_eq!((op.as_str(), resource.as_str()), ("position.close", "nvda"));
+    assert_eq!(p["venue"], ALPACA);
+
+    for (method, path, why) in [
+        ("PATCH", "/v2/orders/61e69015", "replacing"),
+        (
+            "POST",
+            "/v2/positions/AAPL250620C00200000/exercise",
+            "strike",
+        ),
+        ("PATCH", "/v2/account/configurations", "account settings"),
+        ("POST", "/v2/wallets/whitelists", "withdrawal addresses"),
+        (
+            "DELETE",
+            "/v2/wallets/whitelists/abc",
+            "withdrawal addresses",
+        ),
+        ("POST", "/v2/watchlists", "not one of its actions"),
+    ] {
+        let reason = refused(typed(&observe(
+            method,
+            "api.alpaca.markets",
+            path,
+            &[],
+            b"{}",
+        )));
+        assert!(reason.contains(why), "{method} {path}: {reason}");
+    }
+    // Reads pass, and the data API is not covered.
+    assert!(matches!(call("GET", "/v2/positions"), Typed::Http(_)));
+    assert!(matches!(
+        typed(&observe(
+            "GET",
+            "data.alpaca.markets",
+            "/v2/stocks/bars",
+            &[],
+            b""
+        )),
+        Typed::Http(_)
+    ));
+    // Alpaca's Broker API and other brokers have no adapter: their writes are refused.
+    let reason = refused(typed(&observe(
+        "POST",
+        "broker-api.alpaca.markets",
+        "/v1/accounts/x/wallets/transfers",
+        &[],
+        b"{}",
+    )));
+    assert!(reason.contains("(broker)"), "{reason}");
+    assert!(refused(typed(&observe(
+        "POST",
+        "api.tradier.com",
+        "/v1/accounts/x/orders",
+        &[],
+        b""
+    )))
+    .contains("(broker)"));
+}
+
+#[test]
+fn a_definition_with_a_bad_pattern_or_a_misplaced_times_is_refused() {
+    let common = include_str!("../adapters/common.json");
+    for (definition, why) in [
+        (
+            r#"{"id": "a", "category": "broker", "input": "json", "hosts": ["h"], "actions": [{"require": [{"at": "/input/x", "matches": "(", "reason": "r"}], "operation": "o", "resource": "x", "parameters": {"x": {"at": "/input/x"}}}]}"#,
+            "pattern",
+        ),
+        (
+            r#"{"id": "a", "category": "broker", "input": "json", "hosts": ["h"], "actions": [{"operation": "o", "resource": "x", "parameters": {"x": {"at": "/input/x", "times": "/input/y"}}}]}"#,
+            "times is for micro",
+        ),
+    ] {
+        let err =
+            trusted_rail_enforce::Adapters::load_files(common, &[("broker/a.json", definition)])
+                .err()
+                .unwrap_or_else(|| panic!("{definition} loaded"));
+        assert!(err.contains(why), "{err}");
+    }
+}

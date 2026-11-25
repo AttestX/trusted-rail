@@ -121,6 +121,10 @@ definitions. Built in:
 
 - `crypto/evm`: a signed transaction sent through any JSON-RPC endpoint becomes a native or ERC-20
   `token.transfer`, a `token.approve` or a `contract.call`; calls that sign out of sight are refused.
+- `broker/alpaca`: an order becomes `order.place` with its value in US dollars (a market order's
+  notional, or a limit order's quantity times its limit price); an order whose value the request
+  does not state is refused, as are options, several orders in one request, and account changes.
+  Cancels and closes are typed.
 - `payments/stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are
   refused; USD only.
 - `payments/x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what
