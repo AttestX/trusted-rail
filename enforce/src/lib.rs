@@ -20,6 +20,7 @@
 //! [`toolcalls`] reads the tool calls in a model's replies and requests, for the
 //! record of which call led to which request. Those calls are evidence, never the
 //! basis of a decision.
+use base64::Engine;
 use serde_json::{json, Map, Value};
 use spec::{Case, Convert, Input, Unmatched};
 use std::collections::BTreeMap;
@@ -478,11 +479,17 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
     ordinary(request)
 }
 
+/// The header that carries a Hyperliquid action beside a request to sign it:
+/// the action's JSON, base64. Privy refuses unknown fields in its RPC body and
+/// signs only the body and its app id header, so the action travels here.
+pub const HYPERLIQUID_ACTION_HEADER: &str = "x-hyperliquid-action";
+
 /// A request, to any signer on any host, to sign a Hyperliquid action. What
 /// is signed is only a hash of the action, so the request must carry the
-/// action itself (`hyperliquid_action`: the `/exchange` body without its
-/// signature), the action must hash to what is signed, and it is typed as
-/// the order it is: as if sent to `/exchange`. Once signed, an action can be
+/// action itself (the `/exchange` body without its signature), in the
+/// `x-hyperliquid-action` header or as a `hyperliquid_action` body field for
+/// signers that accept one. The action must hash to what is signed, and it is
+/// typed as the order it is: as if sent to `/exchange`. Once signed, an action can be
 /// sent from anywhere, so the signature, not the send, is where it is decided.
 fn hyperliquid_signature(request: &Observed, adapters: &Adapters) -> Option<Typed> {
     let body = request.body;
@@ -517,13 +524,39 @@ fn hyperliquid_signature(request: &Observed, adapters: &Adapters) -> Option<Type
         Ok(o) => o,
         Err(e) => return refuse(&format!("the request cannot be read: {e}")),
     };
-    let Some(shown) = ordered.get("hyperliquid_action") else {
-        return refuse("signing an action blind: the request must carry the action it signs, as hyperliquid_action");
+    let in_header = match request.header(HYPERLIQUID_ACTION_HEADER) {
+        None => None,
+        Some(text) => {
+            let text = text.trim();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(text))
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text));
+            let Ok(bytes) = bytes else {
+                return refuse("x-hyperliquid-action is not base64");
+            };
+            if bytes.len() > decode::MAX_INPUT_BYTES {
+                return refuse("x-hyperliquid-action is too large");
+            }
+            match serde_json::from_slice::<hyperliquid::Ordered>(&bytes) {
+                Ok(action) => Some(action),
+                Err(e) => return refuse(&format!("x-hyperliquid-action cannot be read: {e}")),
+            }
+        }
+    };
+    let shown = match (ordered.get("hyperliquid_action"), &in_header) {
+        (Some(_), Some(_)) => {
+            return refuse("the action is given twice, in the body and in x-hyperliquid-action")
+        }
+        (Some(action), None) | (None, Some(action)) => action,
+        (None, None) => return refuse(
+            "signing an action blind: the request must carry the action it signs, in x-hyperliquid-action",
+        ),
     };
     match hyperliquid::connection_id(shown) {
         Ok(id) if id == connection_id => {}
         Ok(_) => return refuse("the action shown is not the action signed"),
-        Err(e) => return refuse(&format!("hyperliquid_action: {e}")),
+        Err(e) => return refuse(&format!("the action shown: {e}")),
     }
     let exchange = serde_json::to_vec(&shown.to_value()).ok()?;
     let as_sent = Observed {

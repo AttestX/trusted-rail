@@ -136,9 +136,12 @@ Hyperliquid has an order signed as EIP-712 typed data (domain `Exchange`, chain 
 Turnkey, a local key) sees 32 opaque bytes. Once signed, an action can be sent from anywhere, so
 the signature, not the send, is where it is decided. A request to sign one, on any host and in
 Privy's form (`params.typed_data`) or a JSON-RPC `eth_signTypedData*` call, must carry the
-action it signs as `hyperliquid_action`: the `/exchange` body without its signature
+action it signs: the `/exchange` body without its signature
 (`{action, nonce, vaultAddress, expiresAfter}`), with the action's keys in the order they were
-hashed. The action must hash to exactly the `connectionId` (the Python SDK's `action_hash`: the
+hashed, as JSON in base64 in an `x-hyperliquid-action` header. Privy refuses unknown fields in
+its RPC body, and its request signature covers only the body and its app id header, so the
+header leaves what Privy checks untouched. A signer that takes extra body fields may carry it
+as `hyperliquid_action` in the body instead; both at once is refused. The action must hash to exactly the `connectionId` (the Python SDK's `action_hash`: the
 action in msgpack, the nonce, the vault, the expiry, keccak256), and it is then typed as if sent
 to `/exchange`, by `exchange/hyperliquid.json`. Refused: a request without the action (signing
 blind), one whose action is not the one signed, a key given twice, a testnet action, and

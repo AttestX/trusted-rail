@@ -22,6 +22,10 @@ fn vectors() -> Vec<(String, String, String)> {
 }
 
 fn sign(host: &str, path: &str, body: &str) -> Typed {
+    sign_with(host, path, body, &[])
+}
+
+fn sign_with(host: &str, path: &str, body: &str, headers: &[(&str, &str)]) -> Typed {
     type_request(
         &Observed {
             method: "POST",
@@ -31,7 +35,7 @@ fn sign(host: &str, path: &str, body: &str) -> Typed {
             path,
             query: "",
             binary: "/usr/bin/node",
-            headers: &[],
+            headers,
             body: body.as_bytes(),
         },
         &Adapters::builtin(),
@@ -96,6 +100,69 @@ fn a_signature_over_an_order_it_shows_is_that_order() {
         sign("signer.example", "/sign", &privy),
         Typed::Money(_)
     ));
+}
+
+/// Privy refuses unknown fields in its RPC body ("Unrecognized key(s) in
+/// object: 'hyperliquid_action'", seen live), so the action travels in a
+/// header, which Privy's request signature does not cover.
+#[test]
+fn the_action_can_travel_in_a_header() {
+    let all: Vec<Value> = serde_json::from_str(VECTORS).unwrap();
+    for v in &all {
+        let (bare, header) = (v["bare"].as_str().unwrap(), v["header"].as_str().unwrap());
+        assert!(!bare.contains("hyperliquid_action"));
+        let typed = sign_with(
+            "auth.privy.io",
+            PRIVY_RPC,
+            bare,
+            &[("X-Hyperliquid-Action", header)],
+        );
+        assert!(matches!(typed, Typed::Money(_)), "{}: {typed:?}", v["name"]);
+    }
+    let (bare, header) = (
+        all[0]["bare"].as_str().unwrap(),
+        all[0]["header"].as_str().unwrap(),
+    );
+    // Without it, the request is blind.
+    assert!(refused(sign("auth.privy.io", PRIVY_RPC, bare)).contains("blind"));
+    // Another action in the header than the one signed.
+    let other = {
+        use base64::Engine;
+        let e = base64::engine::general_purpose::STANDARD;
+        let text = String::from_utf8(e.decode(header).unwrap()).unwrap();
+        e.encode(text.replace("\"0.0125\"", "\"125\""))
+    };
+    let r = refused(sign_with(
+        "auth.privy.io",
+        PRIVY_RPC,
+        bare,
+        &[("x-hyperliquid-action", &other)],
+    ));
+    assert!(r.contains("not the action signed"), "{r}");
+    // Not base64, or not JSON.
+    let r = refused(sign_with(
+        "auth.privy.io",
+        PRIVY_RPC,
+        bare,
+        &[("x-hyperliquid-action", "%%%")],
+    ));
+    assert!(r.contains("not base64"), "{r}");
+    let r = refused(sign_with(
+        "auth.privy.io",
+        PRIVY_RPC,
+        bare,
+        &[("x-hyperliquid-action", "bm90IGpzb24=")],
+    ));
+    assert!(r.contains("cannot be read"), "{r}");
+    // In the body and in the header: refused, whatever they say.
+    let both = all[0]["privy"].as_str().unwrap();
+    let r = refused(sign_with(
+        "auth.privy.io",
+        PRIVY_RPC,
+        both,
+        &[("x-hyperliquid-action", header)],
+    ));
+    assert!(r.contains("given twice"), "{r}");
 }
 
 #[test]
