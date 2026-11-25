@@ -38,6 +38,11 @@ const BUILTIN: &[(&str, &str)] = &[
     ("x402-v1.json", include_str!("../adapters/x402-v1.json")),
 ];
 const BUILTIN_COMMON: &str = include_str!("../adapters/common.json");
+const BUILTIN_MODEL: &str = include_str!("../adapters/model-requests.json");
+
+/// The largest model request whose body is checked. A larger one to a model host
+/// is refused, since what it asks the provider to do cannot be read.
+pub const MAX_MODEL_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// One HTTP request as the enforcer saw it on the wire, headers included.
 /// Credentials may be missing from `headers`: no adapter needs them.
@@ -102,13 +107,16 @@ pub struct Adapters {
     chains: Vec<spec::Chain>,
     tokens: Vec<spec::Token>,
     adapters: Vec<Loaded>,
+    model: Option<spec::ModelRules>,
 }
 
 impl Adapters {
     /// The definitions in `adapters/`, compiled in.
     pub fn builtin() -> Self {
         let files: Vec<&str> = BUILTIN.iter().map(|(_, s)| *s).collect();
-        Adapters::load(BUILTIN_COMMON, &files).expect("the built-in adapters load")
+        Adapters::load(BUILTIN_COMMON, &files)
+            .and_then(|a| a.with_model_rules(BUILTIN_MODEL))
+            .expect("the built-in adapters load")
     }
 
     /// `common` is `common.json`; `adapters` are one adapter each.
@@ -142,6 +150,54 @@ impl Adapters {
                 })
                 .collect(),
             adapters: loaded,
+            model: None,
+        })
+    }
+
+    /// Checks on model requests (`model-requests.json`), refused when loaded if
+    /// they do not check out.
+    pub fn with_model_rules(mut self, rules: &str) -> Result<Self, String> {
+        let mut rules: spec::ModelRules =
+            serde_json::from_str(rules).map_err(|e| format!("model requests: {e}"))?;
+        for (i, rule) in rules.refuse.iter().enumerate() {
+            let shapes = [
+                rule.present.is_some(),
+                rule.at.is_some() && rule.is.is_some(),
+                rule.header.is_some() && rule.contains.is_some(),
+            ];
+            let loose = rule.at.is_some() != rule.is.is_some()
+                || rule.header.is_some() != rule.contains.is_some();
+            if shapes.iter().filter(|x| **x).count() != 1 || loose || !valid(&rule.reason) {
+                return Err(format!(
+                    "model requests: rule {i} must be one of present, at and is, or header and contains, with a reason"
+                ));
+            }
+            for p in rule.present.iter().chain(rule.at.iter()) {
+                if !p.starts_with('/') {
+                    return Err(format!("model requests: rule {i}: {p} must start with /"));
+                }
+            }
+        }
+        if rules.endpoints.iter().any(|e| e.suffix.is_empty()) {
+            return Err("model requests: an endpoint without a suffix".into());
+        }
+        for host in &mut rules.model_hosts {
+            *host = host.trim_end_matches('.').to_ascii_lowercase();
+        }
+        self.model = Some(rules);
+        Ok(self)
+    }
+
+    /// A host that serves a model API.
+    pub fn is_model_host(&self, name: &str) -> bool {
+        let name = host(name);
+        self.model.as_ref().is_some_and(|m| {
+            m.model_hosts.iter().any(|h| match h.strip_prefix("*.") {
+                Some(parent) => {
+                    name.len() > parent.len() + 1 && name.ends_with(&format!(".{parent}"))
+                }
+                None => *h == name,
+            })
         })
     }
 
@@ -150,11 +206,15 @@ impl Adapters {
         let read =
             |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
         let common = read(&dir.join("common.json"))?;
+        let model = dir.join("model-requests.json");
         let mut names: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter(|p| p.file_name().is_some_and(|n| n != "common.json"))
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n != "common.json" && n != "model-requests.json")
+            })
             .collect();
         names.sort();
         let texts = names
@@ -162,7 +222,11 @@ impl Adapters {
             .map(|p| read(p))
             .collect::<Result<Vec<_>, _>>()?;
         let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-        Adapters::load(&common, &texts)
+        let adapters = Adapters::load(&common, &texts)?;
+        match model.exists() {
+            true => adapters.with_model_rules(&read(&model)?),
+            false => Ok(adapters),
+        }
     }
 
     /// More money hosts, such as the ones a sandbox policy opens.
@@ -190,6 +254,9 @@ impl Adapters {
 /// host, since an agent can point at any RPC endpoint or paid service.
 pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
     let name = request.host_name();
+    if let Some(reason) = model_refusal(request, adapters, &name) {
+        return Typed::Refused(format!("model request: {reason}"));
+    }
     let document = |input: Value| {
         json!({"request": {"method": request.method.to_ascii_uppercase(), "host": name,
                            "path": request.path, "query": request.query}, "input": input})
@@ -262,6 +329,197 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
         Ok(action) => Typed::Http(action),
         Err(_) => Typed::Refused("the request cannot be described".into()),
     }
+}
+
+/// Why a request asks a model provider for something the enforcer cannot see,
+/// or reaches a model host outside its model endpoints.
+fn model_refusal(request: &Observed, adapters: &Adapters, name: &str) -> Option<String> {
+    let rules = adapters.model.as_ref()?;
+    let model_host = adapters.is_model_host(name);
+    for rule in &rules.refuse {
+        if let (Some(header), Some(words)) = (&rule.header, &rule.contains) {
+            let hit = request
+                .headers
+                .iter()
+                .filter(|(n, _)| n.eq_ignore_ascii_case(header))
+                .any(|(_, v)| {
+                    let v = v.to_ascii_lowercase();
+                    words.iter().any(|w| v.contains(&w.to_ascii_lowercase()))
+                });
+            if hit {
+                return Some(rule.reason.clone());
+            }
+        }
+    }
+    let endpoint = !request.reads()
+        && rules.endpoints.iter().any(|e| {
+            e.method
+                .as_ref()
+                .is_none_or(|m| m.eq_ignore_ascii_case(request.method))
+                && request.path.trim_end_matches('/').ends_with(&e.suffix)
+        });
+    // A compressed body cannot be read, so it cannot be checked.
+    let encoded = request.headers.iter().any(|(n, v)| {
+        n.eq_ignore_ascii_case("content-encoding") && !v.trim().eq_ignore_ascii_case("identity")
+    });
+    // Off a model host, a model endpoint's path alone is weak evidence (many
+    // APIs have a `/messages`), so the body must also say it is JSON.
+    let json_type = request
+        .header("content-type")
+        .is_some_and(|t| t.to_ascii_lowercase().contains("json"));
+    let checked_whole = model_host || (endpoint && json_type);
+    if encoded && checked_whole {
+        return Some("a compressed model request, which cannot be checked".into());
+    }
+    let starts_json = request
+        .body
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{');
+    if starts_json {
+        if request.body.len() > MAX_MODEL_REQUEST_BYTES {
+            if checked_whole {
+                return Some("a request too large to check".into());
+            }
+        } else if let Some(body) = strict_json(request.body) {
+            let shaped = rules.shapes.iter().any(|shape| {
+                shape
+                    .iter()
+                    .all(|p| find_all(&body, p).iter().any(|v| !v.is_null()))
+            });
+            let model_request = model_host || endpoint || shaped;
+            if model_request && body.get(DUPLICATE_KEY).is_some() {
+                return Some("a key given twice, which providers may read differently".into());
+            }
+            for rule in rules.refuse.iter().filter(|_| model_request) {
+                let hit = match (&rule.present, &rule.at, &rule.is) {
+                    (Some(p), _, _) => find_all(&body, p).iter().any(|v| !v.is_null()),
+                    (None, Some(p), Some(values)) => find_all(&body, p)
+                        .iter()
+                        .any(|v| values.iter().any(|x| same(v, x, rule.case))),
+                    _ => false,
+                };
+                if hit {
+                    return Some(rule.reason.clone());
+                }
+            }
+        } else if model_host || endpoint {
+            return Some("a body that is not JSON".into());
+        }
+    } else if model_host && !request.reads() && !request.body.is_empty() {
+        return Some("a body that is not a JSON object".into());
+    }
+    if model_host && !request.reads() && !endpoint {
+        return Some(format!(
+            "{} {} is not a model endpoint",
+            request.method.to_ascii_uppercase(),
+            request.path
+        ));
+    }
+    None
+}
+
+/// Set on the top object of a [`strict_json`] value when some object in it gave
+/// a key twice. Not a key a request can carry: it has a NUL in it.
+const DUPLICATE_KEY: &str = "\u{0}duplicate";
+
+/// The body as JSON, marking a key given twice anywhere in it. serde_json keeps
+/// the last of two, and some providers may keep the first, so a request could
+/// show the check one thing and the provider another.
+fn strict_json(body: &[u8]) -> Option<Value> {
+    use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
+    use std::cell::Cell;
+    struct Strict<'d>(&'d Cell<bool>);
+    impl<'de, 'd> serde::de::DeserializeSeed<'de> for Strict<'d> {
+        type Value = Value;
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de, 'd> Visitor<'de> for Strict<'d> {
+        type Value = Value;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("JSON")
+        }
+        fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+            Ok(Value::Bool(v))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+            Ok(v.into())
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+            Ok(v.into())
+        }
+        fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+            Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+            Ok(Value::String(v.into()))
+        }
+        fn visit_string<E>(self, v: String) -> Result<Value, E> {
+            Ok(Value::String(v))
+        }
+        fn visit_unit<E>(self) -> Result<Value, E> {
+            Ok(Value::Null)
+        }
+        fn visit_none<E>(self) -> Result<Value, E> {
+            Ok(Value::Null)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(v) = a.next_element_seed(Strict(self.0))? {
+                items.push(v);
+            }
+            Ok(Value::Array(items))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Value, A::Error> {
+            let mut members = serde_json::Map::new();
+            while let Some(key) = a.next_key::<String>()? {
+                let value = a.next_value_seed(Strict(self.0))?;
+                if members.insert(key, value).is_some() {
+                    self.0.set(true);
+                }
+            }
+            Ok(Value::Object(members))
+        }
+    }
+    let twice = Cell::new(false);
+    let mut d = serde_json::Deserializer::from_slice(body);
+    let mut value = serde::de::DeserializeSeed::deserialize(Strict(&twice), &mut d).ok()?;
+    d.end().ok()?;
+    if twice.get() {
+        if let Value::Object(members) = &mut value {
+            members.insert(DUPLICATE_KEY.into(), Value::Bool(true));
+        }
+    }
+    Some(value)
+}
+
+/// The values at a pointer whose `*` segments stand for every array item or
+/// object member.
+fn find_all<'v>(value: &'v Value, pointer: &str) -> Vec<&'v Value> {
+    let mut found = vec![value];
+    for segment in pointer.split('/').skip(1) {
+        let segment = segment.replace("~1", "/").replace("~0", "~");
+        found = found
+            .into_iter()
+            .flat_map(|v| -> Vec<&Value> {
+                match (segment.as_str(), v) {
+                    ("*", Value::Array(items)) => items.iter().collect(),
+                    ("*", Value::Object(members)) => members.values().collect(),
+                    (key, Value::Object(members)) => members.get(key).into_iter().collect(),
+                    (index, Value::Array(items)) => index
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| items.get(i))
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            })
+            .collect();
+    }
+    found
 }
 
 fn refused(a: &Loaded, reason: &str) -> Typed {

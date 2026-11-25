@@ -229,3 +229,57 @@ pub enum Convert {
     /// A selector as the name of one of `functions`, or as itself.
     Function,
 }
+
+/// Checks on requests to model APIs (`adapters/model-requests.json`).
+///
+/// A provider calls a remote MCP server, a connector or a networked hosted
+/// shell from its own servers, out of the enforcer's sight, but only when the
+/// request asks it to. So a model request that asks is refused, wherever it
+/// goes. A model request is one to a model host, to a model endpoint, or with
+/// a model request's shape.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRules {
+    #[serde(default)]
+    pub summary: String,
+    /// Hosts that serve model APIs. `*.` at the start matches any subdomain.
+    pub model_hosts: Vec<String>,
+    /// On a model host, a write must be to one of these. A write to one of
+    /// these on any host is a model request too: gateways keep the paths.
+    pub endpoints: Vec<Endpoint>,
+    /// A body with every pointer of one of these is a model request, whatever
+    /// its host and path.
+    pub shapes: Vec<Vec<String>>,
+    /// Refused on any host.
+    pub refuse: Vec<ModelRule>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoint {
+    #[serde(default)]
+    pub method: Option<String>,
+    /// The path ends with this: base paths differ between providers and proxies.
+    pub suffix: String,
+}
+
+/// One refusal. Exactly one of: `present` (a pointer, `*` for any array item or
+/// object member, that has a value), `at` with `is`, or `header` with `contains`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRule {
+    #[serde(default)]
+    pub present: Option<String>,
+    #[serde(default)]
+    pub at: Option<String>,
+    #[serde(default)]
+    pub is: Option<Vec<Value>>,
+    #[serde(default)]
+    pub case: Case,
+    #[serde(default)]
+    pub header: Option<String>,
+    /// Refused when the header contains any of these, without case.
+    #[serde(default)]
+    pub contains: Option<Vec<String>>,
+    pub reason: String,
+}

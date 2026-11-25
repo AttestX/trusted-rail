@@ -1,0 +1,174 @@
+{
+  "summary": "A model provider runs some tools itself, from its own servers: a remote MCP server or connector the request names, a hosted shell or environment with network access, or a stored agent or prompt that carries them. The enforcer cannot see those calls, so it refuses any model request that asks for them. A model request is one to a model host, to a model endpoint on any host, or with one of the shapes below. On a model host, a write must also be to a model endpoint.",
+  "model_hosts": [
+    "api.openai.com",
+    "*.openai.azure.com",
+    "*.services.ai.azure.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.x.ai",
+    "api.groq.com",
+    "api.mistral.ai",
+    "api.deepseek.com",
+    "api.minimax.io",
+    "api.minimaxi.com",
+    "dashscope.aliyuncs.com",
+    "dashscope-intl.aliyuncs.com",
+    "api.moonshot.ai",
+    "api.moonshot.cn",
+    "open.bigmodel.cn",
+    "api.z.ai",
+    "api.perplexity.ai",
+    "api.fireworks.ai",
+    "api.together.xyz",
+    "api.cohere.com",
+    "openrouter.ai",
+    "routerbase.com"
+  ],
+  "endpoints": [
+    {
+      "method": "POST",
+      "suffix": "/chat/completions"
+    },
+    {
+      "method": "POST",
+      "suffix": "/completions"
+    },
+    {
+      "method": "POST",
+      "suffix": "/responses"
+    },
+    {
+      "method": "POST",
+      "suffix": "/messages"
+    },
+    {
+      "method": "POST",
+      "suffix": "/messages/count_tokens"
+    },
+    {
+      "method": "POST",
+      "suffix": "/embeddings"
+    },
+    {
+      "method": "POST",
+      "suffix": ":generateContent"
+    },
+    {
+      "method": "POST",
+      "suffix": ":streamGenerateContent"
+    },
+    {
+      "method": "POST",
+      "suffix": ":countTokens"
+    },
+    {
+      "method": "POST",
+      "suffix": ":embedContent"
+    },
+    {
+      "method": "POST",
+      "suffix": ":batchEmbedContents"
+    }
+  ],
+  "shapes": [
+    [
+      "/model",
+      "/messages"
+    ],
+    [
+      "/model",
+      "/input"
+    ],
+    [
+      "/contents"
+    ],
+    [
+      "/mcp_servers"
+    ],
+    [
+      "/agent",
+      "/input"
+    ],
+    [
+      "/agent_id",
+      "/inputs"
+    ],
+    [
+      "/agent_id",
+      "/messages"
+    ]
+  ],
+  "refuse": [
+    {
+      "present": "/mcp_servers",
+      "reason": "Anthropic's MCP connector: the provider would call the server"
+    },
+    {
+      "at": "/tools/*/type",
+      "is": [
+        "mcp",
+        "mcp_server",
+        "mcp_toolset",
+        "connector",
+        "openrouter:shell"
+      ],
+      "reason": "a tool the provider would run against a third party: an MCP server, a connector or a hosted shell"
+    },
+    {
+      "present": "/tools/*/server_url",
+      "reason": "a tool with a server URL: the provider would call it"
+    },
+    {
+      "present": "/tools/*/connector_id",
+      "reason": "a connector: the provider would call it"
+    },
+    {
+      "present": "/tools/*/tunnel_id",
+      "reason": "an MCP tunnel: the provider would call through it"
+    },
+    {
+      "present": "/tools/*/project_connection_id",
+      "reason": "a stored connection: the provider would call it"
+    },
+    {
+      "present": "/tools/*/network_policy",
+      "reason": "a hosted shell with network access"
+    },
+    {
+      "present": "/tools/*/environment/network_policy",
+      "reason": "a hosted shell with network access"
+    },
+    {
+      "present": "/environment/network",
+      "reason": "a hosted environment with network access"
+    },
+    {
+      "present": "/agent_id",
+      "reason": "a stored agent, whose tools the request does not show"
+    },
+    {
+      "present": "/agent",
+      "reason": "a stored agent, whose tools the request does not show"
+    },
+    {
+      "present": "/prompt/id",
+      "reason": "a stored prompt, whose tools the request does not show"
+    },
+    {
+      "header": "anthropic-beta",
+      "contains": [
+        "mcp-client",
+        "inline-tools"
+      ],
+      "reason": "Anthropic's MCP connector beta"
+    },
+    {
+      "header": "x-portkey-beta",
+      "contains": [
+        "server-side-mcp"
+      ],
+      "reason": "Portkey's server-side MCP"
+    }
+  ]
+}

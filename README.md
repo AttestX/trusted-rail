@@ -121,6 +121,10 @@ signed EVM transactions and their ABI arguments) and applies the definitions. Bu
   `token.transfer`, a `token.approve` or a `contract.call`; calls that sign out of sight are refused.
 - `x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what is
   signed is what was accepted; `x402-v1` refuses version 1, which names no asset.
+- `model-requests`: a model request that would have the provider or a gateway call a third party
+  from its own servers (a remote MCP server, a connector, a networked hosted shell, a stored agent
+  or prompt) is refused on any host, and a model host takes only model endpoints. Those calls
+  never pass the proxy, so they could not be decided.
 - A write to a money host (`common.json`) that no adapter types is refused. Everything else is an
   ordinary `http.request`.
 
@@ -128,8 +132,10 @@ Amounts are rounded up, so a limit is never passed by rounding.
 
 `toolcalls` reads the tool calls in a model's replies as they stream (Anthropic Messages, OpenAI
 Chat Completions, OpenAI Responses), and the calls and results the next request resends; `Open`
-links an outbound request to the calls still running. A tool call is what the model asked for,
-not what the sandbox sent: it is evidence for the record, never the basis of a decision.
+links an outbound request to the calls still running. Each call says who runs it: the agent (what
+it sends then passes the proxy) or the provider (a search, a sandboxed run; a provider-run MCP
+call means `model-requests` missed a case). A tool call is what the model asked for, not what the
+sandbox sent: it is evidence for the record, never the basis of a decision.
 
 ## What is proved
 

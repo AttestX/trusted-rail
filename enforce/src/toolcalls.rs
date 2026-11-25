@@ -41,13 +41,27 @@ impl Format {
     }
 }
 
-/// One tool call: its id in the conversation, the tool and its arguments as the
-/// model wrote them (JSON text, possibly invalid).
+/// Who runs a tool call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Runs {
+    /// The agent's runtime, in the sandbox: what it sends goes through the proxy.
+    #[default]
+    Agent,
+    /// The model provider, on its own servers: a remote MCP call, a hosted search
+    /// or code run. The proxy never sees what it sends. The model-request rules
+    /// refuse the requests that would let it reach a third party, so a call here
+    /// is a search, a sandboxed run, or a sign those rules are missing a case.
+    Provider,
+}
+
+/// One tool call: its id in the conversation, the tool, its arguments as the
+/// model wrote them (JSON text, possibly invalid), and who runs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    pub runs: Runs,
 }
 
 /// The most reply text held at once, for a streamed line or a whole JSON body.
@@ -59,6 +73,7 @@ struct Building {
     id: String,
     name: String,
     arguments: String,
+    runs: Runs,
     done: Option<ToolCall>,
 }
 
@@ -127,6 +142,7 @@ impl ReplyReader {
                     id: b.id,
                     name: b.name,
                     arguments: b.arguments,
+                    runs: b.runs,
                 })
             })
             .filter(|c| !c.name.is_empty())
@@ -159,11 +175,13 @@ impl ReplyReader {
     fn anthropic_event(&mut self, event: &Value) {
         let index = event["index"].to_string();
         match event["type"].as_str() {
-            Some("content_block_start") if event["content_block"]["type"] == "tool_use" => {
+            Some("content_block_start") if anthropic_block(&event["content_block"]).is_some() => {
                 let block = &event["content_block"];
+                let call = anthropic_block(block).expect("checked above");
                 let b = self.entry(index);
-                b.id = text(&block["id"]);
-                b.name = text(&block["name"]);
+                b.id = call.id;
+                b.name = call.name;
+                b.runs = call.runs;
                 // A start may carry a whole input; deltas then add nothing.
                 if let Some(input) = block["input"].as_object().filter(|i| !i.is_empty()) {
                     b.arguments = Value::Object(input.clone()).to_string();
@@ -209,10 +227,12 @@ impl ReplyReader {
                     let b = self.entry(text(&item["id"]));
                     b.id = call.id;
                     b.name = call.name;
+                    b.runs = call.runs;
                 }
             }
             Some("response.function_call_arguments.delta")
-            | Some("response.custom_tool_call_input.delta") => {
+            | Some("response.custom_tool_call_input.delta")
+            | Some("response.mcp_call_arguments.delta") => {
                 if let Some(b) = self.calls.get_mut(&text(&event["item_id"])) {
                     b.arguments.push_str(event["delta"].as_str().unwrap_or(""));
                 }
@@ -295,6 +315,9 @@ pub fn calls_in_request(format: Format, body: &[u8]) -> (Vec<ToolCall>, Vec<Stri
                         "function_call_output"
                             | "custom_tool_call_output"
                             | "local_shell_call_output"
+                            | "shell_call_output"
+                            | "apply_patch_call_output"
+                            | "computer_call_output"
                     )
                 ) {
                     results.push(text(&item["call_id"]));
@@ -339,10 +362,27 @@ fn text(v: &Value) -> String {
 }
 
 fn anthropic_block(block: &Value) -> Option<ToolCall> {
-    (block["type"] == "tool_use" || block["type"] == "server_tool_use").then(|| ToolCall {
+    let (name, runs) = match block["type"].as_str()? {
+        "tool_use" => (text(&block["name"]), Runs::Agent),
+        "server_tool_use" => (text(&block["name"]), Runs::Provider),
+        "mcp_tool_use" => (
+            format!(
+                "mcp:{}/{}",
+                text(&block["server_name"]),
+                text(&block["name"])
+            ),
+            Runs::Provider,
+        ),
+        _ => return None,
+    };
+    Some(ToolCall {
         id: text(&block["id"]),
-        name: text(&block["name"]),
-        arguments: block["input"].to_string(),
+        name,
+        arguments: match &block["input"] {
+            Value::Object(input) if input.is_empty() => String::new(),
+            input => input.to_string(),
+        },
+        runs,
     })
 }
 
@@ -355,29 +395,59 @@ fn chat_calls(message: &Value) -> Vec<ToolCall> {
             id: text(&call["id"]),
             name: text(&call["function"]["name"]),
             arguments: text(&call["function"]["arguments"]),
+            runs: Runs::Agent,
         })
         .collect()
 }
 
+/// A field of a Responses item, as JSON text.
+fn field(item: &Value, key: &str) -> String {
+    Value::Object(Map::from_iter([(key.into(), item[key].clone())])).to_string()
+}
+
 fn responses_item(item: &Value) -> Option<ToolCall> {
-    let id = text(&item["call_id"]);
+    let id = match item["call_id"].as_str() {
+        Some(id) => id.to_owned(),
+        None => text(&item["id"]),
+    };
+    let call = |name: String, arguments: String, runs: Runs| {
+        Some(ToolCall {
+            id: id.clone(),
+            name,
+            arguments,
+            runs,
+        })
+    };
+    let mcp = |what: &str| {
+        format!(
+            "{what}:{}/{}",
+            text(&item["server_label"]),
+            text(&item["name"])
+        )
+    };
     match item["type"].as_str()? {
-        "function_call" => Some(ToolCall {
-            id,
-            name: text(&item["name"]),
-            arguments: text(&item["arguments"]),
-        }),
-        "custom_tool_call" => Some(ToolCall {
-            id,
-            name: text(&item["name"]),
-            arguments: text(&item["input"]),
-        }),
-        "local_shell_call" => Some(ToolCall {
-            id,
-            name: "local_shell".into(),
-            arguments: Value::Object(Map::from_iter([("action".into(), item["action"].clone())]))
-                .to_string(),
-        }),
+        // Run by the agent's runtime.
+        "function_call" => call(text(&item["name"]), text(&item["arguments"]), Runs::Agent),
+        "custom_tool_call" => call(text(&item["name"]), text(&item["input"]), Runs::Agent),
+        "local_shell_call" => call("local_shell".into(), field(item, "action"), Runs::Agent),
+        "shell_call" => call("shell".into(), field(item, "action"), Runs::Agent),
+        "apply_patch_call" => call("apply_patch".into(), field(item, "operation"), Runs::Agent),
+        "computer_call" => call("computer".into(), field(item, "action"), Runs::Agent),
+        // Run by the provider.
+        "mcp_call" => call(mcp("mcp"), text(&item["arguments"]), Runs::Provider),
+        "mcp_approval_request" => call(
+            mcp("mcp_approval"),
+            text(&item["arguments"]),
+            Runs::Provider,
+        ),
+        "web_search_call" => call("web_search".into(), field(item, "action"), Runs::Provider),
+        "code_interpreter_call" => call(
+            "code_interpreter".into(),
+            field(item, "code"),
+            Runs::Provider,
+        ),
+        "file_search_call" => call("file_search".into(), field(item, "queries"), Runs::Provider),
+        "image_generation_call" => call("image_generation".into(), String::new(), Runs::Provider),
         _ => None,
     }
 }

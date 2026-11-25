@@ -1,5 +1,7 @@
 use serde_json::json;
-use trusted_rail_enforce::toolcalls::{calls_in_request, Format, Open, ReplyReader, ToolCall};
+use trusted_rail_enforce::toolcalls::{
+    calls_in_request, Format, Open, ReplyReader, Runs, ToolCall,
+};
 
 /// Feed a body in awkward pieces, as a stream arrives.
 fn read(format: Format, body: &str, piece: usize) -> Vec<ToolCall> {
@@ -90,7 +92,8 @@ fn whole_json_replies_are_read() {
         vec![ToolCall {
             id: "toolu_9".into(),
             name: "pay".into(),
-            arguments: r#"{"amount":42}"#.into()
+            arguments: r#"{"amount":42}"#.into(),
+            runs: Runs::Agent,
         }]
     );
     let chat = json!({"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_z","type":"function","function":{"name":"pay","arguments":"{}"}}]}}]});
@@ -149,6 +152,7 @@ fn requests_are_linked_to_the_calls_still_open() {
         id: id.into(),
         name: "bash".into(),
         arguments: "{}".into(),
+        runs: Runs::Agent,
     };
     let mut open = Open::default();
     open.asked(&[call("a"), call("b")]);
@@ -171,4 +175,61 @@ fn formats_follow_the_api_path() {
         Some(Format::OpenAiResponses)
     );
     assert_eq!(Format::of("/v1/models"), None);
+}
+
+#[test]
+fn every_responses_call_is_read_with_who_runs_it() {
+    let body = json!({"output": [
+        {"type": "shell_call", "id": "sh_1", "call_id": "call_s", "action": {"commands": ["ls"]}},
+        {"type": "apply_patch_call", "id": "ap_1", "call_id": "call_p", "operation": {"type": "update_file", "path": "a.py"}},
+        {"type": "computer_call", "id": "cu_1", "call_id": "call_c", "action": {"type": "click", "x": 1, "y": 2}},
+        {"type": "mcp_call", "id": "mcp_1", "server_label": "pay", "name": "transfer", "arguments": "{\"amount\":5}"},
+        {"type": "mcp_approval_request", "id": "mcpr_1", "server_label": "pay", "name": "transfer", "arguments": "{}"},
+        {"type": "web_search_call", "id": "ws_1", "action": {"type": "search", "query": "x"}}
+    ]});
+    let calls = read(Format::OpenAiResponses, &body.to_string(), 7);
+    let seen: Vec<(&str, Runs)> = calls.iter().map(|c| (c.name.as_str(), c.runs)).collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("shell", Runs::Agent),
+            ("apply_patch", Runs::Agent),
+            ("computer", Runs::Agent),
+            ("mcp:pay/transfer", Runs::Provider),
+            ("mcp_approval:pay/transfer", Runs::Provider),
+            ("web_search", Runs::Provider),
+        ]
+    );
+    assert_eq!(calls[0].id, "call_s");
+    assert_eq!(calls[3].id, "mcp_1");
+    assert!(calls[3].arguments.contains("amount"));
+    let (_, results) = calls_in_request(
+        Format::OpenAiResponses,
+        json!({"input": [{"type": "shell_call_output", "call_id": "call_s"}]})
+            .to_string()
+            .as_bytes(),
+    );
+    assert_eq!(results, vec!["call_s".to_string()]);
+}
+
+#[test]
+fn anthropic_mcp_and_server_tool_calls_are_the_providers() {
+    let stream = [
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"mcp_tool_use","id":"mcptoolu_1","name":"transfer","server_name":"pay","input":{}}}"#,
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"amount\":5}"}}"#,
+        r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}"#,
+        "",
+    ]
+    .join("\n");
+    let mut r = ReplyReader::new(Format::Anthropic);
+    r.feed(stream.as_bytes());
+    let (calls, complete) = r.finish();
+    assert!(complete);
+    assert_eq!(calls[0].name, "mcp:pay/transfer");
+    assert_eq!(calls[0].runs, Runs::Provider);
+    assert_eq!(calls[0].arguments, r#"{"amount":5}"#);
+    assert_eq!(
+        (calls[1].name.as_str(), calls[1].runs),
+        ("bash", Runs::Agent)
+    );
 }
