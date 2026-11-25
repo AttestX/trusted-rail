@@ -42,6 +42,14 @@ const BUILTIN: &[(&str, &str)] = &[
         include_str!("../adapters/broker/alpaca.json"),
     ),
     (
+        "exchange/binance.json",
+        include_str!("../adapters/exchange/binance.json"),
+    ),
+    (
+        "exchange/hyperliquid.json",
+        include_str!("../adapters/exchange/hyperliquid.json"),
+    ),
+    (
         "payments/stripe.json",
         include_str!("../adapters/payments/stripe.json"),
     ),
@@ -379,6 +387,22 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
     if let Some(reason) = model_refusal(request, adapters, &name) {
         return Typed::Refused(format!("model request: {reason}"));
     }
+    // A WebSocket is a channel, not a request: what is sent over it (orders,
+    // transfers) never passes as a request the mandate could decide. To a
+    // host that can move money, it is refused. (HTTP/2 opens one with
+    // CONNECT, which is a write and refused on these hosts below.)
+    if request
+        .header("upgrade")
+        .is_some_and(|u| u.to_ascii_lowercase().contains("websocket"))
+    {
+        if let Some(category) = adapters.category_of(&name) {
+            let kind = adapters.category_name(category).unwrap_or(category);
+            return Typed::Refused(format!(
+                "a WebSocket to {name}, a {} host ({category}): what is sent over it cannot be decided",
+                kind.to_lowercase()
+            ));
+        }
+    }
     let document = |input: Value| {
         let segments: Vec<&str> = request.path.split('/').filter(|s| !s.is_empty()).collect();
         json!({"request": {"method": request.method.to_ascii_uppercase(), "host": name,
@@ -421,7 +445,7 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
             matches!(a.spec.input, Input::Form | Input::Json) && a.hosts.contains(&name)
         }) {
             let input = match a.spec.input {
-                Input::Form => decode::form(request.body),
+                Input::Form => decode::form_and_query(request.body, request.query),
                 _ => decode::json_body(request.body),
             };
             let typed = match input {
@@ -441,6 +465,12 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
             ));
         }
     }
+    ordinary(request)
+}
+
+/// A request as an ordinary `http.request`, which the mandate's host and
+/// method limits decide.
+fn ordinary(request: &Observed) -> Typed {
     let http = HttpRequest {
         method: request.method,
         scheme: request.scheme,
@@ -684,13 +714,22 @@ fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Opti
         // A field that is absent reads as null, so `[null]` matches it.
         let holds = |is: &spec::Is| {
             let v = doc.pointer(&is.at).unwrap_or(&Value::Null);
-            is.is.iter().any(|x| same(v, x, is.case))
+            match &is.matches {
+                Some(pattern) => match (v.as_str(), whole_pattern(pattern)) {
+                    (Some(text), Ok(re)) => re.is_match(text),
+                    _ => false,
+                },
+                None => is.is.iter().any(|x| same(v, x, is.case)),
+            }
         };
         if !when.fields.iter().all(holds) {
             continue;
         }
         if let Some(reason) = &action.refuse {
             return Some(refused(a, reason));
+        }
+        if action.pass {
+            return Some(ordinary(request));
         }
         for require in &action.require {
             let ok = match (
@@ -724,7 +763,7 @@ fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Opti
         }
         let mut parameters = Map::new();
         for (name, source) in &action.parameters {
-            match resolve(source, &doc, all, &a.functions) {
+            match resolve(source, &doc, all, a) {
                 Ok(value) => {
                     parameters.insert(name.clone(), value);
                 }
@@ -764,24 +803,17 @@ fn resolve(
     source: &spec::Source,
     doc: &Value,
     all: &Adapters,
-    functions: &BTreeMap<String, String>,
+    a: &Loaded,
 ) -> Result<Value, String> {
     let at = |p: &String| doc.pointer(p).filter(|v| !v.is_null()).cloned();
     if source.convert == Some(Convert::TokenSymbol) && source.at.is_none() && source.first.is_none()
     {
-        return convert_value(
-            Convert::TokenSymbol,
-            Value::Null,
-            source,
-            doc,
-            all,
-            functions,
-        );
+        return convert_value(Convert::TokenSymbol, Value::Null, source, doc, all, a);
     }
     if let Some(constant) = &source.constant {
         return match source.convert {
             None => Ok(constant.clone()),
-            Some(convert) => convert_value(convert, constant.clone(), source, doc, all, functions),
+            Some(convert) => convert_value(convert, constant.clone(), source, doc, all, a),
         };
     }
     let found = match (&source.at, &source.first) {
@@ -798,7 +830,7 @@ fn resolve(
         source,
         doc,
         all,
-        functions,
+        a,
     )
 }
 
@@ -808,7 +840,7 @@ fn convert_value(
     source: &spec::Source,
     doc: &Value,
     all: &Adapters,
-    functions: &BTreeMap<String, String>,
+    a: &Loaded,
 ) -> Result<Value, String> {
     let text = |v: &Value| -> Result<String, String> {
         let t = match v {
@@ -885,9 +917,17 @@ fn convert_value(
             (_, Some(c)) => Value::String(c.native.clone()),
             (id, None) => return Err(format!("chain {id} has no known native token")),
         },
+        Convert::Lookup => {
+            let key = text(&value)?;
+            let table = source.table.as_deref().unwrap_or_default();
+            match a.spec.tables.get(table).and_then(|t| t.get(&key)) {
+                Some(found) => Value::String(found.clone()),
+                None => return Err(format!("{key} is not in its {table} table")),
+            }
+        }
         Convert::Function => {
             let selector = text(&value)?.to_ascii_lowercase();
-            Value::String(functions.get(&selector).cloned().unwrap_or(selector))
+            Value::String(a.functions.get(&selector).cloned().unwrap_or(selector))
         }
     })
 }
@@ -1048,8 +1088,21 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
         }
         for is in &action.when.fields {
             pointer(&is.at).map_err(at)?;
+            match (&is.matches, is.is.is_empty()) {
+                (Some(pattern), true) => {
+                    whole_pattern(pattern).map_err(|e| at(format!("pattern {pattern}: {e}")))?;
+                }
+                (None, false) => {}
+                _ => return Err(at("a field is either is or matches".into())),
+            }
         }
         match (&action.operation, &action.refuse) {
+            (None, None) if action.pass => {
+                if !action.parameters.is_empty() || !action.require.is_empty() {
+                    return Err(at("a pass takes no parameters or checks".into()));
+                }
+            }
+            _ if action.pass => return Err(at("give one of operation, refuse and pass".into())),
             (Some(op), None) => {
                 if !valid(op) || op == action::HTTP_REQUEST {
                     return Err(at(format!("{op} is not an operation an adapter may write")));
@@ -1122,6 +1175,17 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
                 }
                 _ if source.times.is_some() && source.convert != Some(Convert::Micro) => {
                     return Err(at("times is for micro"))
+                }
+                Some(Convert::Lookup)
+                    if !source
+                        .table
+                        .as_ref()
+                        .is_some_and(|t| adapter.tables.contains_key(t)) =>
+                {
+                    return Err(at("lookup needs one of the adapter's tables"))
+                }
+                _ if source.table.is_some() && source.convert != Some(Convert::Lookup) => {
+                    return Err(at("table is for lookup"))
                 }
                 _ => {}
             }

@@ -11,6 +11,8 @@ loaded. Adding an API is a JSON file in its category's folder, an entry in `BUIL
 adapters/
   common.json                 categories, sensitive hosts by category, chains, tokens
   broker/alpaca.json          Alpaca orders (stocks, crypto in USD), cancels, closes
+  exchange/binance.json       Binance spot orders in USDT and USDC (USD on Binance.US), cancels
+  exchange/hyperliquid.json   Hyperliquid perpetual orders in USDC, cancels
   crypto/evm.json             signed EVM transactions, on any RPC host
   payments/stripe.json        Stripe transfers, payouts, refunds
   payments/x402.json          x402 version 2 payments, on any host
@@ -21,7 +23,7 @@ adapters/
 | Category | ISIC Rev.5 | Built | Next | Actions |
 |---|---|---|---|---|
 | `crypto` | 6619 | `evm` | Solana, Bitcoin; custodian signing (Privy, Turnkey, CDP); signed orders and permits (Permit2, CoW Swap, 0x) | `token.transfer`, `token.approve`, `contract.call`, `sign.typed_data` |
-| `exchange` | 6611, 6612 | Sensitive hosts only: unadapted writes refused | Hyperliquid, Binance, OKX, Bybit, Coinbase, Kraken | `order.place`; withdrawals as `token.transfer` |
+| `exchange` | 6611, 6612 | `binance` (spot), `hyperliquid` (perpetuals); sensitive hosts (futures, testnets, WebSocket APIs, Coinbase, Kraken, Bybit, OKX) | OKX, Bybit, Coinbase, Kraken; Binance futures | `order.place`, `order.cancel`; withdrawals as `token.transfer` |
 | `broker` | 6612 | `alpaca`; sensitive hosts (Alpaca Broker API, Tradier, tastytrade, Schwab, IBKR, Robinhood) | IBKR, Tradier | `order.place`, `order.cancel`, `position.close`; cash out as `payment` |
 | `bank` | 641 | Sensitive hosts only (Wise) | Plaid Transfer, Modern Treasury, open banking | `payment` |
 | `payments` | 6619 | `stripe`, `x402`, `x402-v1`; sensitive hosts (PayPal, Square, Adyen) | PayPal, Square, Adyen; card authorization | `payment`, `refund`, `x402.pay`, `card.spend` |
@@ -57,9 +59,10 @@ every category. ISIC has no class for crypto-assets or payment processing, so `c
 |---|---|
 | `id` | Letters, digits and dashes; prefixes every refusal it gives |
 | `category` | One of `common.json`'s categories |
-| `input` | `form` or `json` (a body, on `hosts`; reads pass unread), `header_json` (base64 JSON in `header`, on any host), `jsonrpc_raw_transaction` (a signed EVM transaction in a call named in `methods`, on any host; `refuse_methods` are refused outright) |
+| `input` | `form` (the body's fields and the query's together; a field given twice, in either or across both, is refused) or `json` (a body, on `hosts`; reads pass unread), `header_json` (base64 JSON in `header`, on any host), `jsonrpc_raw_transaction` (a signed EVM transaction in a call named in `methods`, on any host; `refuse_methods` are refused outright) |
 | `functions` | Function signatures, so `"as": "function"` can name a selector |
 | `unmatched` | `refuse` (the default) or `pass`: what a covered request no action matches becomes |
+| `tables` | Name → (key → value), for `"as": "lookup"`: names an API gives by number |
 | `actions` | Tried in order; the first whose `when` holds decides |
 
 Each action reads a document: `{"request": {"method", "host", "path", "segments", "query"}, "input": ...}`.
@@ -72,13 +75,15 @@ For a transaction, `input` is `{"method", "chain_id", "from", "to", "value", "da
 
 | Field | Meaning |
 |---|---|
-| `when` | `method`, `path` (`*` is one segment), `function` (a canonical signature, such as `transfer(address,uint256)`; any ABI argument types, read as JSON: addresses and bytes in lower-case hex, numbers as decimal text, lists as arrays), `fields` (`[{at, is, case}]`). All must hold |
+| `when` | `method`, `path` (`*` is one segment), `function` (a canonical signature, such as `transfer(address,uint256)`; any ABI argument types, read as JSON: addresses and bytes in lower-case hex, numbers as decimal text, lists as arrays), `fields` (`[{at, is, case}]` or `[{at, matches}]`, a regular expression). All must hold |
 | `refuse` | Refuse what matches, for this reason. Or: |
+| `pass` | `true`: let what matches through as an ordinary request, as for a query sent by `POST`. Or: |
 | `operation`, `resource` | The action, and which of its parameters is the resource |
 | `require` | `[{at, in, case, reason}]`, `[{at, matches, reason}]` (text that matches the regular expression, whole; at most 256 characters, linear-time, ASCII) or `[{same: [a, b], case, reason}]`: refused with `reason` unless it holds |
 | `parameters` | Name → source. A source is one of `at` (a JSON pointer), `first` (the first pointer with a value) or `const`, with an optional `default`, and `as` |
 
 `as` reads the value: `text` (the default), `lower`, `count` (a positive whole number),
+`lookup` (the value's text in the adapter's table named `table`; refused if absent),
 `micro` (millionths, from whole or decimal text in units of `decimals` or of the `token`'s,
 rounded up), `token_symbol` (from `token` alone), `chain_name`, `native_symbol`, `function`.
 `times` (a pointer, `micro` only) multiplies by the decimal there, as a quantity times a price,
@@ -106,6 +111,43 @@ withdrawal addresses. `DELETE /v2/orders[/{id}]` is `order.cancel` and `DELETE
 /v2/positions[/{symbol}]` is `position.close` (`all` for every one). Any other write, watchlists
 among them, is refused; reads pass. Alpaca's Broker API, which can move money out, has no adapter,
 so its writes are refused as a sensitive host.
+
+## `exchange/hyperliquid.json`
+
+Hyperliquid's API on mainnet (`api.hyperliquid.xyz`), perpetuals. An `order` action with one
+order becomes `order.place` on the perpetual its asset number names (table `perps`, from the
+exchange's `meta`; its numbers only ever grow, delisted ones included), with `side`,
+`amount_micro` = price × size in USDC, `quantity_micro`, `limit_price_micro` and `account` (the
+`vaultAddress`, or `main`). Every Hyperliquid order has a limit price, market orders included
+(they are IOC limits), so the value is always stated. Refused: several orders in one request
+(each must be decided), take-profit and stop-loss groupings, a builder fee (it pays a third
+party), a market trigger order, a TWAP, spot assets (numbers from 10000, not in the table),
+modifying an order, leverage and margin changes, moving funds out, and account control (agents,
+builder fees, sub-accounts, multi-sig). `cancel`, `cancelByCloid` and `scheduleCancel` are
+`order.cancel`; `POST /info` (reads) passes. Testnet numbers its assets differently, so it is a
+sensitive host with no adapter. To regenerate the table:
+`curl -s -X POST https://api.hyperliquid.xyz/info -d '{"type":"meta"}'`, index → lower-case name.
+
+## `exchange/binance.json`
+
+Binance spot (`api.binance.com` and its alternates) and Binance.US. Binance reads a field from
+the query or the body (the query's when both), so both are read and a field given twice is
+refused. `POST /api/v3/order` becomes `order.place` with its value in its quote asset: a market
+order's `quoteOrderQty`, or `quantity` × `price` for a limit, limit-maker, stop-loss-limit or
+take-profit-limit order. Only USDT and USDC pairs are typed (`currency` `usdt` or `usdc`), and
+USD pairs on Binance.US (`usd`). Refused: an order whose value is not stated (market by
+quantity, stop-loss or take-profit at market), pegged and trailing orders, other quote assets,
+OCO, OTO and OTOCO lists and routed orders, replacing or amending an order, withdrawals and every
+other `/sapi` write. Cancels (`DELETE /api/v3/order`, `/openOrders`, `/orderList`) are
+`order.cancel`; test orders and user data streams pass. Futures (`fapi`, `dapi`, `papi`) and the
+WebSocket API are sensitive hosts, refused.
+
+## WebSockets
+
+A WebSocket is a channel, not a request: what is sent over it never passes as a request the
+mandate could decide, and exchanges take orders over them (Binance's WebSocket API,
+Hyperliquid's `post`). So a WebSocket upgrade to a sensitive host, or to a host an adapter
+covers, is refused. Market data streams are on other hosts (`stream.binance.com`) and pass.
 
 ## `security/model-requests.json`
 

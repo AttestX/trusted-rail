@@ -1,0 +1,641 @@
+{
+  "id": "hyperliquid",
+  "category": "exchange",
+  "summary": "Hyperliquid's API on mainnet: perpetuals. An order is typed with its value in USDC, price times size, on the perpetual its asset number names (table perps, from the exchange's meta, whose numbers only ever grow). Several orders in one request, spot assets, builder fees, market trigger orders and TWAPs are refused, as are leverage and margin changes, moving funds out, and account control (agents, builder fees, sub-accounts, multi-sig). Cancels are typed; reads (/info) pass.",
+  "input": "json",
+  "hosts": [
+    "api.hyperliquid.xyz"
+  ],
+  "unmatched": "refuse",
+  "tables": {
+    "perps": {
+      "0": "btc",
+      "1": "eth",
+      "2": "atom",
+      "3": "matic",
+      "4": "dydx",
+      "5": "sol",
+      "6": "avax",
+      "7": "bnb",
+      "8": "ape",
+      "9": "op",
+      "10": "ltc",
+      "11": "arb",
+      "12": "doge",
+      "13": "inj",
+      "14": "sui",
+      "15": "kpepe",
+      "16": "crv",
+      "17": "ldo",
+      "18": "link",
+      "19": "stx",
+      "20": "rndr",
+      "21": "cfx",
+      "22": "ftm",
+      "23": "gmx",
+      "24": "snx",
+      "25": "xrp",
+      "26": "bch",
+      "27": "apt",
+      "28": "aave",
+      "29": "comp",
+      "30": "mkr",
+      "31": "wld",
+      "32": "fxs",
+      "33": "hpos",
+      "34": "rlb",
+      "35": "unibot",
+      "36": "ygg",
+      "37": "trx",
+      "38": "kshib",
+      "39": "uni",
+      "40": "sei",
+      "41": "rune",
+      "42": "ox",
+      "43": "friend",
+      "44": "shia",
+      "45": "cyber",
+      "46": "zro",
+      "47": "blz",
+      "48": "dot",
+      "49": "banana",
+      "50": "trb",
+      "51": "ftt",
+      "52": "loom",
+      "53": "ogn",
+      "54": "rdnt",
+      "55": "ark",
+      "56": "bnt",
+      "57": "canto",
+      "58": "req",
+      "59": "bigtime",
+      "60": "kas",
+      "61": "orbs",
+      "62": "blur",
+      "63": "tia",
+      "64": "bsv",
+      "65": "ada",
+      "66": "ton",
+      "67": "mina",
+      "68": "polyx",
+      "69": "gas",
+      "70": "pendle",
+      "71": "stg",
+      "72": "fet",
+      "73": "strax",
+      "74": "near",
+      "75": "meme",
+      "76": "ordi",
+      "77": "badger",
+      "78": "neo",
+      "79": "zen",
+      "80": "fil",
+      "81": "pyth",
+      "82": "sushi",
+      "83": "ilv",
+      "84": "imx",
+      "85": "kbonk",
+      "86": "gmt",
+      "87": "super",
+      "88": "ustc",
+      "89": "nfti",
+      "90": "jup",
+      "91": "klunc",
+      "92": "rsr",
+      "93": "gala",
+      "94": "jto",
+      "95": "ntrn",
+      "96": "ace",
+      "97": "mav",
+      "98": "wif",
+      "99": "cake",
+      "100": "people",
+      "101": "ens",
+      "102": "etc",
+      "103": "xai",
+      "104": "manta",
+      "105": "uma",
+      "106": "ondo",
+      "107": "alt",
+      "108": "zeta",
+      "109": "dym",
+      "110": "mavia",
+      "111": "w",
+      "112": "pandora",
+      "113": "strk",
+      "114": "pixel",
+      "115": "ai",
+      "116": "tao",
+      "117": "ar",
+      "118": "myro",
+      "119": "kfloki",
+      "120": "bome",
+      "121": "ethfi",
+      "122": "ena",
+      "123": "mnt",
+      "124": "tnsr",
+      "125": "saga",
+      "126": "merl",
+      "127": "hbar",
+      "128": "popcat",
+      "129": "omni",
+      "130": "eigen",
+      "131": "rez",
+      "132": "not",
+      "133": "turbo",
+      "134": "brett",
+      "135": "io",
+      "136": "zk",
+      "137": "blast",
+      "138": "lista",
+      "139": "mew",
+      "140": "render",
+      "141": "kdogs",
+      "142": "pol",
+      "143": "cati",
+      "144": "celo",
+      "145": "hmstr",
+      "146": "scr",
+      "147": "neiroeth",
+      "148": "kneiro",
+      "149": "goat",
+      "150": "moodeng",
+      "151": "grass",
+      "152": "purr",
+      "153": "pnut",
+      "154": "xlm",
+      "155": "chillguy",
+      "156": "sand",
+      "157": "iota",
+      "158": "algo",
+      "159": "hype",
+      "160": "me",
+      "161": "move",
+      "162": "virtual",
+      "163": "pengu",
+      "164": "usual",
+      "165": "fartcoin",
+      "166": "ai16z",
+      "167": "aixbt",
+      "168": "zerebro",
+      "169": "bio",
+      "170": "griffain",
+      "171": "spx",
+      "172": "s",
+      "173": "morpho",
+      "174": "trump",
+      "175": "melania",
+      "176": "anime",
+      "177": "vine",
+      "178": "vvv",
+      "179": "jelly",
+      "180": "bera",
+      "181": "tst",
+      "182": "layer",
+      "183": "ip",
+      "184": "om",
+      "185": "kaito",
+      "186": "nil",
+      "187": "paxg",
+      "188": "prompt",
+      "189": "baby",
+      "190": "wct",
+      "191": "hyper",
+      "192": "zora",
+      "193": "init",
+      "194": "dood",
+      "195": "launchcoin",
+      "196": "nxpc",
+      "197": "soph",
+      "198": "resolv",
+      "199": "syrup",
+      "200": "pump",
+      "201": "prove",
+      "202": "yzy",
+      "203": "xpl",
+      "204": "wlfi",
+      "205": "linea",
+      "206": "sky",
+      "207": "aster",
+      "208": "avnt",
+      "209": "stbl",
+      "210": "0g",
+      "211": "hemi",
+      "212": "apex",
+      "213": "2z",
+      "214": "zec",
+      "215": "mon",
+      "216": "met",
+      "217": "mega",
+      "218": "cc",
+      "219": "icp",
+      "220": "aero",
+      "221": "stable",
+      "222": "fogo",
+      "223": "lit",
+      "224": "xmr",
+      "225": "axs",
+      "226": "dash",
+      "227": "skr",
+      "228": "aztec",
+      "229": "chip",
+      "230": "gram",
+      "231": "cashcat",
+      "232": "pons",
+      "233": "useless",
+      "234": "xten"
+    }
+  },
+  "actions": [
+    {
+      "when": {
+        "method": "POST",
+        "path": "/info"
+      },
+      "pass": true
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "order"
+            ]
+          },
+          {
+            "at": "/input/action/orders/1",
+            "is": [
+              null
+            ]
+          },
+          {
+            "at": "/input/action/orders/0/b",
+            "is": [
+              true
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/action/grouping",
+          "in": [
+            "na"
+          ],
+          "reason": "an order grouped with take-profit or stop-loss orders is several orders: send each on its own"
+        },
+        {
+          "at": "/input/action/builder",
+          "in": [
+            null
+          ],
+          "reason": "a builder fee pays a third party"
+        },
+        {
+          "at": "/input/action/orders/0/t/trigger/isMarket",
+          "in": [
+            null,
+            false
+          ],
+          "reason": "a market trigger order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/action/orders/0/a",
+          "as": "lookup",
+          "table": "perps"
+        },
+        "side": {
+          "const": "buy"
+        },
+        "order_type": {
+          "const": "limit"
+        },
+        "amount_micro": {
+          "at": "/input/action/orders/0/p",
+          "as": "micro",
+          "decimals": 0,
+          "times": "/input/action/orders/0/s"
+        },
+        "quantity_micro": {
+          "at": "/input/action/orders/0/s",
+          "as": "micro",
+          "decimals": 0
+        },
+        "limit_price_micro": {
+          "at": "/input/action/orders/0/p",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdc"
+        },
+        "account": {
+          "at": "/input/vaultAddress",
+          "default": "main",
+          "as": "lower"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "hyperliquid"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "order"
+            ]
+          },
+          {
+            "at": "/input/action/orders/1",
+            "is": [
+              null
+            ]
+          },
+          {
+            "at": "/input/action/orders/0/b",
+            "is": [
+              false
+            ]
+          }
+        ]
+      },
+      "require": [
+        {
+          "at": "/input/action/grouping",
+          "in": [
+            "na"
+          ],
+          "reason": "an order grouped with take-profit or stop-loss orders is several orders: send each on its own"
+        },
+        {
+          "at": "/input/action/builder",
+          "in": [
+            null
+          ],
+          "reason": "a builder fee pays a third party"
+        },
+        {
+          "at": "/input/action/orders/0/t/trigger/isMarket",
+          "in": [
+            null,
+            false
+          ],
+          "reason": "a market trigger order's price is not stated"
+        }
+      ],
+      "operation": "order.place",
+      "resource": "symbol",
+      "parameters": {
+        "symbol": {
+          "at": "/input/action/orders/0/a",
+          "as": "lookup",
+          "table": "perps"
+        },
+        "side": {
+          "const": "sell"
+        },
+        "order_type": {
+          "const": "limit"
+        },
+        "amount_micro": {
+          "at": "/input/action/orders/0/p",
+          "as": "micro",
+          "decimals": 0,
+          "times": "/input/action/orders/0/s"
+        },
+        "quantity_micro": {
+          "at": "/input/action/orders/0/s",
+          "as": "micro",
+          "decimals": 0
+        },
+        "limit_price_micro": {
+          "at": "/input/action/orders/0/p",
+          "as": "micro",
+          "decimals": 0
+        },
+        "currency": {
+          "const": "usdc"
+        },
+        "account": {
+          "at": "/input/vaultAddress",
+          "default": "main",
+          "as": "lower"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "hyperliquid"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "order"
+            ]
+          }
+        ]
+      },
+      "refuse": "several orders in one request: send each on its own, so each is decided"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "cancel"
+            ]
+          }
+        ]
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "at": "/input/action/cancels/0/o"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "hyperliquid"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "cancelByCloid"
+            ]
+          }
+        ]
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "at": "/input/action/cancels/0/cloid",
+          "as": "lower"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "hyperliquid"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "scheduleCancel"
+            ]
+          }
+        ]
+      },
+      "operation": "order.cancel",
+      "resource": "order",
+      "parameters": {
+        "order": {
+          "const": "all"
+        },
+        "venue": {
+          "at": "/request/host"
+        },
+        "rail": {
+          "const": "hyperliquid"
+        }
+      }
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "modify",
+              "batchModify"
+            ]
+          }
+        ]
+      },
+      "refuse": "modifying an order changes it out of sight: cancel it and place a new one"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "twapOrder"
+            ]
+          }
+        ]
+      },
+      "refuse": "a TWAP order's price is not stated"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "updateLeverage",
+              "updateIsolatedMargin",
+              "topUpIsolatedOnlyMargin"
+            ]
+          }
+        ]
+      },
+      "refuse": "leverage and margin are the owner's to change"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "usdSend",
+              "spotSend",
+              "withdraw3",
+              "sendAsset",
+              "usdClassTransfer",
+              "vaultTransfer",
+              "subAccountTransfer",
+              "subAccountSpotTransfer",
+              "cDeposit",
+              "cWithdraw",
+              "tokenDelegate"
+            ]
+          }
+        ]
+      },
+      "refuse": "moving funds out of the trading account is not typed"
+    },
+    {
+      "when": {
+        "method": "POST",
+        "path": "/exchange",
+        "fields": [
+          {
+            "at": "/input/action/type",
+            "is": [
+              "approveAgent",
+              "approveBuilderFee",
+              "setReferrer",
+              "createSubAccount",
+              "convertToMultiSigUser",
+              "evmUserModify",
+              "createVault",
+              "vaultModify",
+              "vaultDistribute"
+            ]
+          }
+        ]
+      },
+      "refuse": "account control (agents, builder fees, sub-accounts, multi-sig) is the owner's"
+    }
+  ]
+}

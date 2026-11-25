@@ -32,6 +32,26 @@ pub fn form(body: &[u8]) -> Result<Value, String> {
     Ok(Value::Object(map))
 }
 
+/// A form body and the query's fields together, as servers that take either
+/// read them. A field given twice, in either or across both, is refused.
+pub fn form_and_query(body: &[u8], query: &str) -> Result<Value, String> {
+    let Value::Object(mut map) = form(body)? else {
+        unreachable!("a form is an object")
+    };
+    if query.len() > MAX_INPUT_BYTES {
+        return Err("the query is too large to read".into());
+    }
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        if map
+            .insert(key.into_owned(), Value::String(value.into_owned()))
+            .is_some()
+        {
+            return Err("a field given twice, in the query or the body".into());
+        }
+    }
+    Ok(Value::Object(map))
+}
+
 pub fn json_body(body: &[u8]) -> Result<Value, String> {
     if body.len() > MAX_INPUT_BYTES {
         return Err("the body is too large to read".into());
