@@ -1,9 +1,39 @@
 # Action definitions
 
-What an observed request becomes, for the mandate. One file per API; `common.json` holds what
-they share. They are loaded with `Adapters::builtin()` (compiled in) or `Adapters::from_dir`, and
-a definition that does not check out is refused when it is loaded. Adding an API is a JSON file
-here, an entry in `BUILTIN` (`src/lib.rs`) if it ships built in, and a test.
+What an observed request becomes, for the mandate. They are grouped by industry: one folder per
+category, one file per API in the folder of its category, and `common.json` for what they share.
+They are loaded with `Adapters::builtin()` (compiled in) or `Adapters::from_dir`, and a
+definition that does not check out, or sits in another category's folder, is refused when it is
+loaded. Adding an API is a JSON file in its category's folder, an entry in `BUILTIN`
+(`src/lib.rs`) if it ships built in, and a test.
+
+```
+adapters/
+  common.json                 categories, sensitive hosts by category, chains, tokens
+  crypto/evm.json             signed EVM transactions, on any RPC host
+  payments/stripe.json        Stripe transfers, payouts, refunds
+  payments/x402.json          x402 version 2 payments, on any host
+  payments/x402-v1.json       x402 version 1, refused
+  security/model-requests.json  model requests that would have a provider call a third party
+```
+
+| Category | ISIC Rev.5 | Built | Next | Actions |
+|---|---|---|---|---|
+| `crypto` | 6619 | `evm` | Solana, Bitcoin; custodian signing (Privy, Turnkey, CDP); signed orders and permits (Permit2, CoW Swap, 0x) | `token.transfer`, `token.approve`, `contract.call`, `sign.typed_data` |
+| `exchange` | 6611, 6612 | Sensitive hosts only: unadapted writes refused | Hyperliquid, Binance, OKX, Bybit, Coinbase, Kraken | `order.place`; withdrawals as `token.transfer` |
+| `broker` | 6612 | None | Alpaca, then IBKR, Tradier | `order.place`; cash out as `payment` |
+| `bank` | 641 | Sensitive hosts only (Wise) | Plaid Transfer, Modern Treasury, open banking | `payment` |
+| `payments` | 6619 | `stripe`, `x402`, `x402-v1`; sensitive hosts (PayPal, Square, Adyen) | PayPal, Square, Adyen; card authorization | `payment`, `refund`, `x402.pay`, `card.spend` |
+| `commerce` | 47, 4790, 5232, 5540, 79 | None | Payment-provider checkout hosts; Shopify, Amazon SP-API, Duffel | `purchase`, `store.change` |
+| `ads` | 7310 | None | Google Ads, Meta Ads | `ad.budget` |
+| `content` | 58, 59, 60 | None | X, YouTube, WordPress | `content.publish` |
+| `comms` | 61 | None | Email and SMS APIs (SendGrid, Twilio) | `message.send` |
+| `cloud` | 6310 | None | AWS, GCP, Hetzner, domain registrars | `resource.create` |
+| `security` | none | `model-requests` | Account control and persistent channels, refused in every category | refusals |
+
+A category with nothing built still gets a decision: its writes are ordinary `http.request`
+actions, which a mandate's host and tool limits apply to, unless its hosts are listed as
+sensitive, when they are refused.
 
 ## `common.json`
 
@@ -49,7 +79,7 @@ rounded up), `token_symbol` (from `token` alone), `chain_name`, `native_symbol`,
 `or_zero` allows zero for `count` and `micro`. A value that is missing or cannot be read refuses
 the request; nothing is guessed.
 
-## `model-requests.json`
+## `security/model-requests.json`
 
 Some tools a model provider runs itself, from its own servers: a remote MCP server or connector
 the request names, a hosted shell or environment with network access, a stored agent or prompt

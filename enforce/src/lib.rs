@@ -31,14 +31,29 @@ pub mod spec;
 pub mod toolcalls;
 
 /// The built-in definitions, compiled in.
+/// The built-in adapters, each in the folder of its category.
 const BUILTIN: &[(&str, &str)] = &[
-    ("stripe.json", include_str!("../adapters/stripe.json")),
-    ("evm.json", include_str!("../adapters/evm.json")),
-    ("x402.json", include_str!("../adapters/x402.json")),
-    ("x402-v1.json", include_str!("../adapters/x402-v1.json")),
+    (
+        "crypto/evm.json",
+        include_str!("../adapters/crypto/evm.json"),
+    ),
+    (
+        "payments/stripe.json",
+        include_str!("../adapters/payments/stripe.json"),
+    ),
+    (
+        "payments/x402.json",
+        include_str!("../adapters/payments/x402.json"),
+    ),
+    (
+        "payments/x402-v1.json",
+        include_str!("../adapters/payments/x402-v1.json"),
+    ),
 ];
 const BUILTIN_COMMON: &str = include_str!("../adapters/common.json");
-const BUILTIN_MODEL: &str = include_str!("../adapters/model-requests.json");
+/// The model-request rules, which apply to every category.
+pub const MODEL_RULES_FILE: &str = "security/model-requests.json";
+const BUILTIN_MODEL: &str = include_str!("../adapters/security/model-requests.json");
 
 /// The largest model request whose body is checked. A larger one to a model host
 /// is refused, since what it asks the provider to do cannot be read.
@@ -115,8 +130,7 @@ pub struct Adapters {
 impl Adapters {
     /// The definitions in `adapters/`, compiled in.
     pub fn builtin() -> Self {
-        let files: Vec<&str> = BUILTIN.iter().map(|(_, s)| *s).collect();
-        Adapters::load(BUILTIN_COMMON, &files)
+        Adapters::load_files(BUILTIN_COMMON, BUILTIN)
             .and_then(|a| a.with_model_rules(BUILTIN_MODEL))
             .expect("the built-in adapters load")
     }
@@ -237,28 +251,67 @@ impl Adapters {
     pub fn from_dir(dir: &Path) -> Result<Self, String> {
         let read =
             |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+        let list = |d: &Path| -> Result<Vec<std::path::PathBuf>, String> {
+            let mut found: Vec<_> = std::fs::read_dir(d)
+                .map_err(|e| format!("{}: {e}", d.display()))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .collect();
+            found.sort();
+            Ok(found)
+        };
         let common = read(&dir.join("common.json"))?;
-        let model = dir.join("model-requests.json");
-        let mut names: Vec<_> = std::fs::read_dir(dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter(|p| {
-                p.file_name()
-                    .is_some_and(|n| n != "common.json" && n != "model-requests.json")
-            })
-            .collect();
-        names.sort();
-        let texts = names
+        let mut files = Vec::new();
+        for entry in list(dir)? {
+            let name = entry
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if entry.is_dir() {
+                for file in list(&entry)? {
+                    let file_name = file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default();
+                    let path = format!("{name}/{file_name}");
+                    if file.extension().is_some_and(|x| x == "json") && path != MODEL_RULES_FILE {
+                        files.push((path, read(&file)?));
+                    }
+                }
+            } else if entry.extension().is_some_and(|x| x == "json") && name != "common.json" {
+                return Err(format!(
+                    "{name}: an adapter goes in the folder of its category"
+                ));
+            }
+        }
+        let files: Vec<(&str, &str)> = files
             .iter()
-            .map(|p| read(p))
-            .collect::<Result<Vec<_>, _>>()?;
-        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let adapters = Adapters::load(&common, &texts)?;
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        let adapters = Adapters::load_files(&common, &files)?;
+        let model = dir.join(MODEL_RULES_FILE);
         match model.exists() {
             true => adapters.with_model_rules(&read(&model)?),
             false => Ok(adapters),
         }
+    }
+
+    /// Like [`Adapters::load`], for adapters given with their paths
+    /// (`<category>/<id>.json`): each must sit in the folder of its category.
+    pub fn load_files(common: &str, files: &[(&str, &str)]) -> Result<Self, String> {
+        for (path, text) in files {
+            let category = serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|v| v["category"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let folder = path.split_once('/').map(|(f, _)| f).unwrap_or_default();
+            if folder != category {
+                return Err(format!(
+                    "{path}: its category is {category:?}, so it goes in {category}/"
+                ));
+            }
+        }
+        let texts: Vec<&str> = files.iter().map(|(_, t)| *t).collect();
+        Adapters::load(common, &texts)
     }
 
     /// More sensitive hosts in a category, such as the ones a sandbox policy

@@ -112,21 +112,25 @@ actions (`payment`, `token.transfer`, `x402.pay`, ...); an enforcer observes HTT
 `type_request` turns one observed request into the action to decide.
 
 **What a request becomes is defined in JSON** (`enforce/adapters/`, format in its README), the
-way a mandate's templates are. The crate only decodes protocols (forms, JSON, base64 headers,
-signed EVM transactions and their ABI arguments) and applies the definitions. Built in:
+way a mandate's templates are, grouped by industry: one folder per category (`crypto`,
+`exchange`, `broker`, `bank`, `payments`, `commerce`, `ads`, `content`, `comms`, `cloud`,
+`security`), each with its nearest ISIC Rev.5 codes. The crate only decodes protocols (forms,
+JSON, base64 headers, signed EVM transactions and their ABI arguments) and applies the
+definitions. Built in:
 
-- `stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are refused;
-  USD only.
-- `evm`: a signed transaction sent through any JSON-RPC endpoint becomes a native or ERC-20
+- `crypto/evm`: a signed transaction sent through any JSON-RPC endpoint becomes a native or ERC-20
   `token.transfer`, a `token.approve` or a `contract.call`; calls that sign out of sight are refused.
-- `x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what is
-  signed is what was accepted; `x402-v1` refuses version 1, which names no asset.
-- `model-requests`: a model request that would have the provider or a gateway call a third party
-  from its own servers (a remote MCP server, a connector, a networked hosted shell, a stored agent
-  or prompt) is refused on any host, and a model host takes only model endpoints. Those calls
-  never pass the proxy, so they could not be decided.
-- A write to a sensitive host (`common.json`, grouped by category: `exchange`, `payments`, `bank`, ...) that no adapter types is refused, naming the category. Every adapter has a category too. Everything else is an
-  ordinary `http.request`.
+- `payments/stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are
+  refused; USD only.
+- `payments/x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what
+  is signed is what was accepted; `payments/x402-v1` refuses version 1, which names no asset.
+- `security/model-requests`: a model request that would have the provider or a gateway call a
+  third party from its own servers (a remote MCP server, a connector, a networked hosted shell, a
+  stored agent or prompt) is refused on any host, and a model host takes only model endpoints.
+  Those calls never pass the proxy, so they could not be decided.
+- A write to a sensitive host (`common.json`, by category: the exchanges, PayPal, Square, Adyen,
+  Wise) that no adapter types is refused, naming the category. Everything else is an ordinary
+  `http.request`.
 
 Amounts are rounded up, so a limit is never passed by rounding.
 

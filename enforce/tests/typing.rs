@@ -710,3 +710,35 @@ fn hosts_and_adapters_have_categories() {
     let common = r#"{"categories": {"payments": {"name": "Payments"}}, "sensitive_hosts": {"casino": ["x.example"]}}"#;
     assert!(Adapters::load(common, &[]).is_err());
 }
+
+#[test]
+fn each_adapter_sits_in_the_folder_of_its_category() {
+    let common =
+        r#"{"categories": {"payments": {"name": "Payments"}, "crypto": {"name": "Crypto"}}}"#;
+    let adapter = r#"{"id": "pp", "category": "payments", "input": "json", "hosts": ["pp.example"], "actions": [{"refuse": "x"}]}"#;
+    assert!(Adapters::load_files(common, &[("payments/pp.json", adapter)]).is_ok());
+    let wrong = Adapters::load_files(common, &[("crypto/pp.json", adapter)])
+        .err()
+        .unwrap();
+    assert!(wrong.contains("goes in payments/"), "{wrong}");
+
+    // From a directory: an adapter at the top, or in the wrong folder, is refused.
+    let dir = std::env::temp_dir().join(format!("rail-adapters-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("crypto")).unwrap();
+    std::fs::write(dir.join("common.json"), common).unwrap();
+    std::fs::write(dir.join("pp.json"), adapter).unwrap();
+    assert!(Adapters::from_dir(&dir)
+        .err()
+        .unwrap()
+        .contains("folder of its category"));
+    std::fs::rename(dir.join("pp.json"), dir.join("crypto/pp.json")).unwrap();
+    assert!(Adapters::from_dir(&dir)
+        .err()
+        .unwrap()
+        .contains("goes in payments/"));
+    std::fs::create_dir_all(dir.join("payments")).unwrap();
+    std::fs::rename(dir.join("crypto/pp.json"), dir.join("payments/pp.json")).unwrap();
+    assert_eq!(Adapters::from_dir(&dir).unwrap().ids(), vec!["pp"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
