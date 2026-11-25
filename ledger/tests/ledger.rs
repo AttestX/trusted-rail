@@ -344,3 +344,47 @@ fn the_ledger_file_must_be_private() {
         Err(Error::InvalidInput)
     ));
 }
+
+/// Runs this test binary again as another process that opens the same ledger.
+fn other_process(dir: &tempfile::TempDir, task: &str) -> String {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "another_process_opening_the_ledger_loses_nothing",
+            "--nocapture",
+        ])
+        .env("LEDGER_OTHER_PROCESS", dir.path())
+        .env("LEDGER_OTHER_TASK", task)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn another_process_opening_the_ledger_loses_nothing() {
+    let who = agent("trader");
+    if let Some(path) = std::env::var_os("LEDGER_OTHER_PROCESS") {
+        let ledger = Ledger::open(
+            &std::path::Path::new(&path).join("ledger.db"),
+            Arc::new(Digest32),
+        )
+        .unwrap();
+        if std::env::var("LEDGER_OTHER_TASK").unwrap() == "count" {
+            println!("decisions={}", ledger.head(&who).unwrap().decisions);
+        }
+        return;
+    }
+    let dir = private_dir();
+    let ledger = open(&dir);
+    ledger.activate(&who, &policy(100), Some(&fresh())).unwrap();
+    spend(&ledger, &who, "1", 10, 100).unwrap();
+    // A second service starts on the same file and exits, as a failed restart does.
+    other_process(&dir, "open");
+    spend(&ledger, &who, "2", 10, 101).unwrap();
+    assert!(other_process(&dir, "count").contains("decisions=2"));
+}
