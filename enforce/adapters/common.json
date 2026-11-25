@@ -1,0 +1,38 @@
+{
+  "money_hosts": [
+    "api.paypal.com",
+    "api-m.paypal.com",
+    "api.squareup.com",
+    "api.wise.com",
+    "api.adyen.com",
+    "api.hyperliquid.xyz",
+    "api.coinbase.com",
+    "api.exchange.coinbase.com",
+    "api.binance.com",
+    "api.kraken.com",
+    "api.bybit.com",
+    "www.okx.com"
+  ],
+  "chains": [
+    {"id": 1, "name": "ethereum", "native": "ETH"},
+    {"id": 10, "name": "optimism", "native": "ETH"},
+    {"id": 56, "name": "bsc", "native": "BNB"},
+    {"id": 137, "name": "polygon", "native": "POL"},
+    {"id": 2345, "name": "goat", "native": "BTC"},
+    {"id": 8453, "name": "base", "native": "ETH"},
+    {"id": 42161, "name": "arbitrum", "native": "ETH"},
+    {"id": 43114, "name": "avalanche", "native": "AVAX"}
+  ],
+  "tokens": [
+    {"chain": 1, "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "symbol": "USDC", "decimals": 6},
+    {"chain": 1, "address": "0xdac17f958d2ee523a2206206994597c13d831ec7", "symbol": "USDT", "decimals": 6},
+    {"chain": 10, "address": "0x0b2c639c533813f4aa9d7837caf62653d097ff85", "symbol": "USDC", "decimals": 6},
+    {"chain": 56, "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", "symbol": "USDC", "decimals": 18},
+    {"chain": 56, "address": "0x55d398326f99059ff775485246999027b3197955", "symbol": "USDT", "decimals": 18},
+    {"chain": 137, "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", "symbol": "USDC", "decimals": 6},
+    {"chain": 137, "address": "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", "symbol": "USDT", "decimals": 6},
+    {"chain": 8453, "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "decimals": 6},
+    {"chain": 42161, "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831", "symbol": "USDC", "decimals": 6},
+    {"chain": 42161, "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", "symbol": "USDT", "decimals": 6}
+  ]
+}

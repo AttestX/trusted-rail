@@ -1,0 +1,43 @@
+{
+  "id": "stripe",
+  "summary": "Stripe, as a merchant's agent uses it. Money leaves a Stripe account by a transfer, a payout or a refund. Reads pass; every other write is refused, since paying an invoice or confirming a charge moves money too. Only USD is typed, since limits are in US cents.",
+  "input": "form",
+  "hosts": ["api.stripe.com"],
+  "unmatched": "refuse",
+  "actions": [
+    {
+      "when": {"method": "POST", "path": "/v1/transfers"},
+      "require": [{"at": "/input/currency", "in": ["usd"], "case": "any", "reason": "a transfer not in USD"}],
+      "operation": "payment",
+      "resource": "recipient",
+      "parameters": {
+        "recipient": {"at": "/input/destination"},
+        "amount_cents": {"at": "/input/amount", "as": "count"},
+        "currency": {"const": "usd"},
+        "rail": {"const": "stripe.transfer"}
+      }
+    },
+    {
+      "when": {"method": "POST", "path": "/v1/payouts"},
+      "require": [{"at": "/input/currency", "in": ["usd"], "case": "any", "reason": "a payout not in USD"}],
+      "operation": "payment",
+      "resource": "recipient",
+      "parameters": {
+        "recipient": {"at": "/input/destination", "default": "default-external-account"},
+        "amount_cents": {"at": "/input/amount", "as": "count"},
+        "currency": {"const": "usd"},
+        "rail": {"const": "stripe.payout"}
+      }
+    },
+    {
+      "when": {"method": "POST", "path": "/v1/refunds"},
+      "operation": "refund",
+      "resource": "of",
+      "parameters": {
+        "of": {"first": ["/input/payment_intent", "/input/charge"]},
+        "amount_cents": {"at": "/input/amount", "as": "count"},
+        "rail": {"const": "stripe.refund"}
+      }
+    }
+  ]
+}

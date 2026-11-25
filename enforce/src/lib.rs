@@ -1,29 +1,46 @@
 //! What an enforcer needs around trusted-rail.
 //!
 //! A mandate's money templates read typed actions (`payment`, `token.transfer`,
-//! `x402.pay`, ...), but an enforcer on the network observes HTTP requests. This
-//! crate turns an observed request into the action a policy decides:
+//! `x402.pay`, ...), but an enforcer on the network observes HTTP requests.
+//! [`type_request`] turns an observed request into the action a policy decides.
 //!
-//! - a request that can move money is typed by an adapter written for that API
-//!   ([`stripe`], [`evm`], [`x402`]);
-//! - a request to a money host that no adapter can type is refused;
-//! - anything else is an ordinary `http.request`, for the mandate's host rules.
+//! **What a request becomes is defined in JSON**, one file per API
+//! (`adapters/*.json`, see [`spec`]), the way a mandate's templates are: which
+//! requests an adapter covers, which action each becomes, its parameters and
+//! their units, and when to refuse. This crate only decodes protocols (forms,
+//! JSON, base64 headers, signed EVM transactions) and applies the definitions.
+//! Adding an API is a JSON file and a test, with no Rust change.
+//!
+//! - A request an adapter covers becomes its action, or is refused.
+//! - A write to a money host that no adapter types is refused.
+//! - Anything else is an ordinary `http.request`, for the mandate's host rules.
 //!
 //! It never reads what the agent says about a request, only the request.
 //!
 //! [`toolcalls`] reads the tool calls in a model's replies and requests, for the
 //! record of which call led to which request. Those calls are evidence, never the
 //! basis of a decision.
-use serde_json::Value;
+use serde_json::{json, Map, Value};
+use spec::{Case, Convert, Input, Unmatched};
+use std::collections::BTreeMap;
+use std::path::Path;
 use trusted_rail::action::{self, Action, HttpRequest};
 
-pub mod evm;
-pub mod stripe;
+pub mod decode;
+pub mod spec;
 pub mod toolcalls;
-pub mod x402;
+
+/// The built-in definitions, compiled in.
+const BUILTIN: &[(&str, &str)] = &[
+    ("stripe.json", include_str!("../adapters/stripe.json")),
+    ("evm.json", include_str!("../adapters/evm.json")),
+    ("x402.json", include_str!("../adapters/x402.json")),
+    ("x402-v1.json", include_str!("../adapters/x402-v1.json")),
+];
+const BUILTIN_COMMON: &str = include_str!("../adapters/common.json");
 
 /// One HTTP request as the enforcer saw it on the wire, headers included.
-/// Credentials may be missing from `headers`: no adapter reads them.
+/// Credentials may be missing from `headers`: no adapter needs them.
 pub struct Observed<'a> {
     pub method: &'a str,
     /// `http` or `https`.
@@ -39,19 +56,6 @@ pub struct Observed<'a> {
 }
 
 impl<'a> Observed<'a> {
-    fn http(&self) -> HttpRequest<'a> {
-        HttpRequest {
-            method: self.method,
-            scheme: self.scheme,
-            host: self.host,
-            port: self.port,
-            path: self.path,
-            query: self.query,
-            binary: self.binary,
-            body: self.body,
-        }
-    }
-
     /// The first header of that name, compared without case.
     pub fn header(&self, name: &str) -> Option<&'a str> {
         self.headers
@@ -79,102 +83,625 @@ pub enum Typed {
     Http(Action),
     /// An adapter typed it: decide this action.
     Money(Action),
-    /// It could move money and no adapter can say how much, or to whom.
-    /// Refuse it without asking the mandate.
+    /// It could move money and its adapter cannot say how much or to whom, or
+    /// no adapter covers it. Refuse it without asking the mandate.
     Refused(String),
 }
 
-/// Hosts that can move money. A request to one of them that is not a read is
-/// refused unless an adapter types it. The list is a starting point: an
-/// enforcer adds the hosts its sandboxes reach.
-pub const MONEY_HOSTS: &[&str] = &[
-    "api.stripe.com",
-    "api.paypal.com",
-    "api-m.paypal.com",
-    "api.squareup.com",
-    "api.wise.com",
-    "api.adyen.com",
-    "api.hyperliquid.xyz",
-    "api.coinbase.com",
-    "api.exchange.coinbase.com",
-    "api.binance.com",
-    "api.kraken.com",
-    "api.bybit.com",
-    "www.okx.com",
-];
-
-/// Which hosts count as money hosts.
-pub struct Hosts {
-    money: Vec<String>,
+struct Loaded {
+    spec: spec::Adapter,
+    hosts: Vec<String>,
+    functions: BTreeMap<String, String>,
+    /// For each action, its `when.function` as (selector, argument types).
+    calls: Vec<Option<(String, Vec<String>)>>,
 }
 
-impl Default for Hosts {
-    fn default() -> Self {
-        Hosts {
-            money: MONEY_HOSTS.iter().map(|h| h.to_string()).collect(),
-        }
-    }
+/// A set of loaded definitions.
+pub struct Adapters {
+    money_hosts: Vec<String>,
+    chains: Vec<spec::Chain>,
+    tokens: Vec<spec::Token>,
+    adapters: Vec<Loaded>,
 }
 
-impl Hosts {
-    /// The built-in list plus `extra`.
-    pub fn with(extra: &[&str]) -> Self {
-        let mut hosts = Hosts::default();
-        for host in extra {
-            hosts
-                .money
-                .push(host.trim_end_matches('.').to_ascii_lowercase());
-        }
-        hosts
+impl Adapters {
+    /// The definitions in `adapters/`, compiled in.
+    pub fn builtin() -> Self {
+        let files: Vec<&str> = BUILTIN.iter().map(|(_, s)| *s).collect();
+        Adapters::load(BUILTIN_COMMON, &files).expect("the built-in adapters load")
     }
 
-    pub fn is_money(&self, host: &str) -> bool {
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
-        self.money.contains(&host)
+    /// `common` is `common.json`; `adapters` are one adapter each.
+    pub fn load(common: &str, adapters: &[&str]) -> Result<Self, String> {
+        let common: spec::Common =
+            serde_json::from_str(common).map_err(|e| format!("common: {e}"))?;
+        for token in &common.tokens {
+            if !evm_address(&token.address) || token.decimals > 36 {
+                return Err(format!("common: token {} is not valid", token.symbol));
+            }
+        }
+        let mut loaded = Vec::new();
+        for text in adapters {
+            let adapter: spec::Adapter =
+                serde_json::from_str(text).map_err(|e| format!("adapter: {e}"))?;
+            let id = adapter.id.clone();
+            if loaded.iter().any(|l: &Loaded| l.spec.id == id) {
+                return Err(format!("adapter {id} is defined twice"));
+            }
+            loaded.push(check(adapter).map_err(|e| format!("adapter {id}: {e}"))?);
+        }
+        Ok(Adapters {
+            money_hosts: common.money_hosts.iter().map(|h| host(h)).collect(),
+            chains: common.chains,
+            tokens: common
+                .tokens
+                .into_iter()
+                .map(|t| spec::Token {
+                    address: t.address.to_ascii_lowercase(),
+                    ..t
+                })
+                .collect(),
+            adapters: loaded,
+        })
+    }
+
+    /// `common.json` and every other `*.json` in `dir`, in name order.
+    pub fn from_dir(dir: &Path) -> Result<Self, String> {
+        let read =
+            |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+        let common = read(&dir.join("common.json"))?;
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter(|p| p.file_name().is_some_and(|n| n != "common.json"))
+            .collect();
+        names.sort();
+        let texts = names
+            .iter()
+            .map(|p| read(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        Adapters::load(&common, &texts)
+    }
+
+    /// More money hosts, such as the ones a sandbox policy opens.
+    pub fn with_money_hosts(mut self, extra: &[&str]) -> Self {
+        self.money_hosts.extend(extra.iter().map(|h| host(h)));
+        self
+    }
+
+    /// A money host: listed in `common.json`, added, or covered by an adapter.
+    pub fn is_money(&self, name: &str) -> bool {
+        let name = host(name);
+        self.money_hosts.contains(&name) || self.adapters.iter().any(|a| a.hosts.contains(&name))
+    }
+
+    /// The ids of the loaded adapters, in the order they are tried.
+    pub fn ids(&self) -> Vec<&str> {
+        self.adapters.iter().map(|a| a.spec.id.as_str()).collect()
     }
 }
 
 /// Type one observed request.
 ///
-/// Money is recognised by what the request carries as well as by where it goes:
-/// an x402 payment header or a JSON-RPC call that sends a transaction is money on
-/// any host, since an agent can point at any RPC endpoint or paid service.
-pub fn type_request(request: &Observed, hosts: &Hosts) -> Typed {
-    if let Some(typed) = x402::type_request(request) {
-        return typed;
-    }
-    if let Some(typed) = evm::type_request(request) {
-        return typed;
-    }
-    let host = request.host_name();
-    if host == stripe::HOST {
-        if let Some(typed) = stripe::type_request(request) {
+/// Money is recognised by what a request carries as well as where it goes: a
+/// payment header or a JSON-RPC call that sends a transaction is money on any
+/// host, since an agent can point at any RPC endpoint or paid service.
+pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
+    let name = request.host_name();
+    let document = |input: Value| {
+        json!({"request": {"method": request.method.to_ascii_uppercase(), "host": name,
+                           "path": request.path, "query": request.query}, "input": input})
+    };
+    let covers = |a: &Loaded| a.hosts.is_empty() || a.hosts.contains(&name);
+    for a in adapters
+        .adapters
+        .iter()
+        .filter(|a| a.spec.input == Input::HeaderJson && covers(a))
+    {
+        let Some(header) = request.header(a.spec.header.as_deref().unwrap_or_default()) else {
+            continue;
+        };
+        let typed = match decode::header_json(header) {
+            Ok(input) => apply(a, adapters, request, document(input)),
+            Err(reason) => Some(refused(a, &reason)),
+        };
+        if let Some(typed) = typed {
             return typed;
         }
     }
-    if hosts.is_money(&host) && !request.reads() {
-        return Typed::Refused(format!(
-            "{} {host} can move money and no adapter types it",
-            request.method.to_ascii_uppercase()
-        ));
+    for a in adapters
+        .adapters
+        .iter()
+        .filter(|a| a.spec.input == Input::JsonrpcRawTransaction && covers(a))
+    {
+        let typed = match decode::jsonrpc(request.body, &a.spec.methods, &a.spec.refuse_methods) {
+            decode::Rpc::Not => None,
+            decode::Rpc::Refused(reason) => Some(refused(a, &reason)),
+            decode::Rpc::Transaction(input) => apply(a, adapters, request, document(input)),
+        };
+        if let Some(typed) = typed {
+            return typed;
+        }
     }
-    match action::http_request(&request.http()) {
+    if !request.reads() {
+        for a in adapters.adapters.iter().filter(|a| {
+            matches!(a.spec.input, Input::Form | Input::Json) && a.hosts.contains(&name)
+        }) {
+            let input = match a.spec.input {
+                Input::Form => decode::form(request.body),
+                _ => decode::json_body(request.body),
+            };
+            let typed = match input {
+                Ok(input) => apply(a, adapters, request, document(input)),
+                Err(reason) => Some(refused(a, &reason)),
+            };
+            if let Some(typed) = typed {
+                return typed;
+            }
+        }
+        if adapters.is_money(&name) {
+            return Typed::Refused(format!(
+                "{} {name} can move money and no adapter types it",
+                request.method.to_ascii_uppercase()
+            ));
+        }
+    }
+    let http = HttpRequest {
+        method: request.method,
+        scheme: request.scheme,
+        host: request.host,
+        port: request.port,
+        path: request.path,
+        query: request.query,
+        binary: request.binary,
+        body: request.body,
+    };
+    match action::http_request(&http) {
         Ok(action) => Typed::Http(action),
         Err(_) => Typed::Refused("the request cannot be described".into()),
     }
 }
 
-pub(crate) fn money(operation: &str, resource: &str, parameters: Value) -> Typed {
-    if resource.is_empty() || resource.len() > 512 || resource.chars().any(char::is_control) {
-        return Typed::Refused("the action has no usable resource".into());
+fn refused(a: &Loaded, reason: &str) -> Typed {
+    Typed::Refused(format!("{}: {reason}", a.spec.id))
+}
+
+/// The first action whose `when` holds. `None` passes the request on.
+fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Option<Typed> {
+    for (action, call) in a.spec.actions.iter().zip(&a.calls) {
+        let when = &action.when;
+        if when
+            .method
+            .as_ref()
+            .is_some_and(|m| !m.eq_ignore_ascii_case(request.method))
+            || when
+                .path
+                .as_ref()
+                .is_some_and(|p| !path_matches(p, request.path))
+        {
+            continue;
+        }
+        if let Some((selector, types)) = call {
+            if doc.pointer("/input/selector").and_then(Value::as_str) != Some(selector) {
+                continue;
+            }
+            let data = doc
+                .pointer("/input/data")
+                .and_then(Value::as_str)
+                .unwrap_or("0x");
+            let data = hex::decode(data.trim_start_matches("0x")).unwrap_or_default();
+            match decode::arguments(&data, types) {
+                Ok(args) => doc["input"]["args"] = Value::Array(args),
+                Err(reason) => return Some(refused(a, &reason)),
+            }
+        }
+        let holds = |is: &spec::Is| {
+            doc.pointer(&is.at)
+                .is_some_and(|v| is.is.iter().any(|x| same(v, x, is.case)))
+        };
+        if !when.fields.iter().all(holds) {
+            continue;
+        }
+        if let Some(reason) = &action.refuse {
+            return Some(refused(a, reason));
+        }
+        for require in &action.require {
+            let ok = match (&require.at, &require.one_of, &require.same) {
+                (Some(at), Some(values), None) => doc
+                    .pointer(at)
+                    .is_some_and(|v| values.iter().any(|x| same(v, x, require.case))),
+                (None, None, Some([x, y])) => match (doc.pointer(x), doc.pointer(y)) {
+                    (Some(x), Some(y)) => !x.is_null() && same(x, y, require.case),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !ok {
+                return Some(refused(a, &require.reason));
+            }
+        }
+        let mut parameters = Map::new();
+        for (name, source) in &action.parameters {
+            match resolve(source, &doc, all, &a.functions) {
+                Ok(value) => {
+                    parameters.insert(name.clone(), value);
+                }
+                Err(reason) => return Some(refused(a, &format!("{name}: {reason}"))),
+            }
+        }
+        let resource = action
+            .resource
+            .as_ref()
+            .and_then(|r| parameters.get(r))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let operation = action.operation.clone().unwrap_or_default();
+        return Some(match resource {
+            Some(resource) if valid(&resource) => Typed::Money(Action {
+                operation,
+                resource,
+                parameters: Value::Object(parameters),
+            }),
+            _ => refused(a, "the action has no usable resource"),
+        });
     }
-    Typed::Money(Action {
-        operation: operation.into(),
-        resource: resource.into(),
-        parameters,
+    match a.spec.unmatched {
+        Unmatched::Pass => None,
+        Unmatched::Refuse => Some(refused(
+            a,
+            &format!(
+                "{} {} is not one of its actions",
+                request.method.to_ascii_uppercase(),
+                request.path
+            ),
+        )),
+    }
+}
+
+fn resolve(
+    source: &spec::Source,
+    doc: &Value,
+    all: &Adapters,
+    functions: &BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let at = |p: &String| doc.pointer(p).filter(|v| !v.is_null()).cloned();
+    if source.convert == Some(Convert::TokenSymbol) && source.at.is_none() && source.first.is_none()
+    {
+        return convert_value(
+            Convert::TokenSymbol,
+            Value::Null,
+            source,
+            doc,
+            all,
+            functions,
+        );
+    }
+    if let Some(constant) = &source.constant {
+        return match source.convert {
+            None => Ok(constant.clone()),
+            Some(convert) => convert_value(convert, constant.clone(), source, doc, all, functions),
+        };
+    }
+    let found = match (&source.at, &source.first) {
+        (Some(p), _) => at(p),
+        (None, Some(ps)) => ps.iter().find_map(at),
+        _ => None,
+    };
+    let value = found
+        .or_else(|| source.default.clone())
+        .ok_or("not in the request")?;
+    convert_value(
+        source.convert.unwrap_or(Convert::Text),
+        value,
+        source,
+        doc,
+        all,
+        functions,
+    )
+}
+
+fn convert_value(
+    convert: Convert,
+    value: Value,
+    source: &spec::Source,
+    doc: &Value,
+    all: &Adapters,
+    functions: &BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let text = |v: &Value| -> Result<String, String> {
+        let t = match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => return Err("not text".into()),
+        };
+        if valid(&t) {
+            Ok(t)
+        } else {
+            Err("not usable text".into())
+        }
+    };
+    let token = || -> Result<&spec::Token, String> {
+        let at = source.token.as_ref().ok_or("no token named")?;
+        let chain = doc
+            .pointer(&at.chain)
+            .and_then(chain_id)
+            .ok_or("no chain id")?;
+        let address = doc
+            .pointer(&at.address)
+            .and_then(Value::as_str)
+            .ok_or("no token address")?
+            .to_ascii_lowercase();
+        all.tokens
+            .iter()
+            .find(|t| t.chain == chain && t.address == address)
+            .ok_or_else(|| format!("token {address} on chain {chain} has no known decimals"))
+    };
+    let chain = |v: &Value| -> Result<(u64, Option<&spec::Chain>), String> {
+        let id = chain_id(v).ok_or("not a chain id")?;
+        Ok((id, all.chains.iter().find(|c| c.id == id)))
+    };
+    Ok(match convert {
+        Convert::Text => Value::String(text(&value)?),
+        Convert::Lower => Value::String(text(&value)?.to_ascii_lowercase()),
+        Convert::Count => {
+            let n = whole(&value).ok_or("not a whole number")?;
+            if n == 0 && !source.or_zero {
+                return Err("zero".into());
+            }
+            json!(n)
+        }
+        Convert::Micro => {
+            let decimals = match source.decimals {
+                Some(d) => d,
+                None => token()?.decimals,
+            };
+            let (mantissa, fraction) = decimal(&value).ok_or("not an amount")?;
+            let m = micro(mantissa, decimals + fraction).ok_or("an amount too large to compare")?;
+            if m == 0 && !source.or_zero {
+                return Err("an amount of nothing".into());
+            }
+            json!(m)
+        }
+        Convert::TokenSymbol => Value::String(token()?.symbol.clone()),
+        Convert::ChainName => match chain(&value)? {
+            (_, Some(c)) => Value::String(c.name.clone()),
+            (id, None) => Value::String(format!("eip155:{id}")),
+        },
+        Convert::NativeSymbol => match chain(&value)? {
+            (_, Some(c)) => Value::String(c.native.clone()),
+            (id, None) => return Err(format!("chain {id} has no known native token")),
+        },
+        Convert::Function => {
+            let selector = text(&value)?.to_ascii_lowercase();
+            Value::String(functions.get(&selector).cloned().unwrap_or(selector))
+        }
     })
 }
 
-pub(crate) fn refused(reason: impl Into<String>) -> Typed {
-    Typed::Refused(reason.into())
+/// A non-negative whole number that fits a policy's numbers.
+fn whole(v: &Value) -> Option<u64> {
+    let n = match v {
+        Value::Number(n) => n.as_u64()?,
+        Value::String(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+            s.parse().ok()?
+        }
+        _ => return None,
+    };
+    (n <= i64::MAX as u64).then_some(n)
+}
+
+/// `"12.50"` → (1250, 2). No sign, no exponent.
+fn decimal(v: &Value) -> Option<(u128, u32)> {
+    let s = match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let (int, frac) = s.split_once('.').unwrap_or((&s, ""));
+    if int.is_empty()
+        || !int.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((
+        format!("{int}{frac}").parse().ok()?,
+        u32::try_from(frac.len()).ok()?,
+    ))
+}
+
+/// `mantissa / 10^scale` in millionths, rounded up so a limit is never passed by
+/// rounding. `None` when it does not fit a policy's numbers.
+pub fn micro(mantissa: u128, scale: u32) -> Option<u64> {
+    let m = if scale >= 6 {
+        mantissa.div_ceil(10u128.checked_pow(scale - 6)?)
+    } else {
+        mantissa.checked_mul(10u128.checked_pow(6 - scale)?)?
+    };
+    u64::try_from(m).ok().filter(|m| *m <= i64::MAX as u64)
+}
+
+fn chain_id(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.strip_prefix("eip155:").unwrap_or(s).parse().ok(),
+        _ => None,
+    }
+}
+
+fn same(a: &Value, b: &Value, case: Case) -> bool {
+    match (a, b) {
+        (Value::String(x), Value::String(y)) => match case {
+            Case::Exact => x == y,
+            Case::Any => x.eq_ignore_ascii_case(y),
+        },
+        (Value::String(s), Value::Number(n)) | (Value::Number(n), Value::String(s)) => {
+            *s == n.to_string()
+        }
+        _ => a == b,
+    }
+}
+
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let p: Vec<&str> = pattern.trim_end_matches('/').split('/').collect();
+    let q: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    p.len() == q.len()
+        && p.iter()
+            .zip(&q)
+            .all(|(p, q)| *p == "*" && !q.is_empty() || p == q)
+}
+
+fn host(h: &str) -> String {
+    h.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn valid(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
+}
+
+fn evm_address(s: &str) -> bool {
+    s.len() == 42 && s.starts_with("0x") && s[2..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn pointer(p: &str) -> Result<(), String> {
+    if p.starts_with("/request/") || p.starts_with("/input/") || p == "/input" {
+        Ok(())
+    } else {
+        Err(format!("{p} points outside /request and /input"))
+    }
+}
+
+/// Everything about a definition that can be checked before a request arrives.
+fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
+    if !valid(&adapter.id)
+        || !adapter
+            .id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("the id must be letters, digits and dashes".into());
+    }
+    match adapter.input {
+        Input::Form | Input::Json if adapter.hosts.is_empty() => {
+            return Err("a form or json adapter must name its hosts".into())
+        }
+        Input::HeaderJson if adapter.header.is_none() => {
+            return Err("header_json needs a header".into())
+        }
+        Input::JsonrpcRawTransaction if adapter.methods.is_empty() => {
+            return Err("jsonrpc_raw_transaction needs methods".into())
+        }
+        _ => {}
+    }
+    if adapter.actions.is_empty() {
+        return Err("no actions".into());
+    }
+    let mut functions = BTreeMap::new();
+    for signature in &adapter.functions {
+        let (selector, _) = decode::signature(signature)?;
+        let name = signature.split('(').next().unwrap_or_default().to_owned();
+        functions.insert(selector, name);
+    }
+    let mut calls = Vec::new();
+    for (i, action) in adapter.actions.iter().enumerate() {
+        let at = |e: String| format!("action {i}: {e}");
+        if let Some(f) = &action.when.function {
+            if adapter.input != Input::JsonrpcRawTransaction {
+                return Err(at(
+                    "when.function is only for jsonrpc_raw_transaction".into()
+                ));
+            }
+            calls.push(Some(decode::signature(f).map_err(at)?));
+        } else {
+            calls.push(None);
+        }
+        if let Some(path) = &action.when.path {
+            if !path.starts_with('/') {
+                return Err(at(format!("path {path} must start with /")));
+            }
+        }
+        for is in &action.when.fields {
+            pointer(&is.at).map_err(at)?;
+        }
+        match (&action.operation, &action.refuse) {
+            (Some(op), None) => {
+                if !valid(op) || op == action::HTTP_REQUEST {
+                    return Err(at(format!("{op} is not an operation an adapter may write")));
+                }
+                let resource = action
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| at("no resource".into()))?;
+                if !action.parameters.contains_key(resource) {
+                    return Err(at(format!("the resource {resource} is not a parameter")));
+                }
+            }
+            (None, Some(reason)) if valid(reason) => {
+                if !action.parameters.is_empty() || !action.require.is_empty() {
+                    return Err(at("a refusal takes no parameters or checks".into()));
+                }
+            }
+            _ => return Err(at("give exactly one of operation and refuse".into())),
+        }
+        for require in &action.require {
+            match (&require.at, &require.one_of, &require.same) {
+                (Some(p), Some(_), None) => pointer(p).map_err(at)?,
+                (None, None, Some([x, y])) => {
+                    pointer(x).map_err(at)?;
+                    pointer(y).map_err(at)?;
+                }
+                _ => return Err(at("a check is either at and in, or same".into())),
+            }
+            if !valid(&require.reason) {
+                return Err(at("a check needs a reason".into()));
+            }
+        }
+        for (name, source) in &action.parameters {
+            let at = |e: &str| at(format!("parameter {name}: {e}"));
+            if !valid(name) {
+                return Err(at("not a usable name"));
+            }
+            let found = [
+                source.at.is_some(),
+                source.first.is_some(),
+                source.constant.is_some(),
+            ];
+            let found = found.iter().filter(|x| **x).count();
+            // A token's symbol is found from `token` alone.
+            let token_only = source.convert == Some(Convert::TokenSymbol) && found == 0;
+            if found != 1 && !token_only {
+                return Err(at("give exactly one of at, first and const"));
+            }
+            for p in source.at.iter().chain(source.first.iter().flatten()) {
+                pointer(p).map_err(|e| at(&e))?;
+            }
+            if source.constant.is_some() && source.default.is_some() {
+                return Err(at("a const has no default"));
+            }
+            match source.convert {
+                Some(Convert::Micro) if source.decimals.is_some() == source.token.is_some() => {
+                    return Err(at("micro needs exactly one of decimals and token"))
+                }
+                Some(Convert::TokenSymbol) if source.token.is_none() => {
+                    return Err(at("token_symbol needs token"))
+                }
+                _ => {}
+            }
+            if let Some(t) = &source.token {
+                pointer(&t.chain).map_err(|e| at(&e))?;
+                pointer(&t.address).map_err(|e| at(&e))?;
+            }
+            if source.decimals.is_some_and(|d| d > 36) {
+                return Err(at("too many decimals"));
+            }
+        }
+    }
+    Ok(Loaded {
+        hosts: adapter.hosts.iter().map(|h| host(h)).collect(),
+        functions,
+        calls,
+        spec: adapter,
+    })
 }

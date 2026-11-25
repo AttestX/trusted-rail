@@ -109,18 +109,20 @@ each proven batch only where the last one ended is what detects that.
 `enforce/` (`trusted-rail-enforce`, a separate package that never reaches the proof guest) is
 what an enforcer on the network needs around the engine. A mandate's money templates read typed
 actions (`payment`, `token.transfer`, `x402.pay`, ...); an enforcer observes HTTP requests.
-`type_request` turns one observed request into the action to decide:
+`type_request` turns one observed request into the action to decide.
 
-- **Adapters** type the requests that can move money: Stripe transfers, payouts and refunds
-  (`stripe`); signed EVM transactions sent through any JSON-RPC endpoint, as native or ERC-20
-  transfers, ERC-20 approvals or contract calls (`evm`); and x402 version 2 payment headers on
-  any host (`x402`).
-- **Refused**: a request to a money host (`MONEY_HOSTS`, plus the enforcer's own) that no adapter
-  types and that is not a read; and anything an adapter cannot compare with a limit: another
-  currency, a token without known decimals, an amount that does not fit, a call that signs
-  elsewhere (`eth_sendTransaction`, `personal_sign`, ...), an x402 version 1 header, which names
-  no asset.
-- Everything else is an ordinary `http.request`.
+**What a request becomes is defined in JSON** (`enforce/adapters/`, format in its README), the
+way a mandate's templates are. The crate only decodes protocols (forms, JSON, base64 headers,
+signed EVM transactions and their ABI arguments) and applies the definitions. Built in:
+
+- `stripe`: transfers and payouts become `payment`, refunds `refund`; other writes are refused;
+  USD only.
+- `evm`: a signed transaction sent through any JSON-RPC endpoint becomes a native or ERC-20
+  `token.transfer`, a `token.approve` or a `contract.call`; calls that sign out of sight are refused.
+- `x402`: a version 2 `PAYMENT-SIGNATURE` header on any host becomes `x402.pay` when what is
+  signed is what was accepted; `x402-v1` refuses version 1, which names no asset.
+- A write to a money host (`common.json`) that no adapter types is refused. Everything else is an
+  ordinary `http.request`.
 
 Amounts are rounded up, so a limit is never passed by rounding.
 

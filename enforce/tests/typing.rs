@@ -1,6 +1,6 @@
 use base64::Engine;
 use serde_json::{json, Value};
-use trusted_rail_enforce::{evm, type_request, Hosts, Observed, Typed};
+use trusted_rail_enforce::{micro, type_request, Adapters, Observed, Typed};
 
 fn observe<'a>(
     method: &'a str,
@@ -23,7 +23,7 @@ fn observe<'a>(
 }
 
 fn typed(o: &Observed) -> Typed {
-    type_request(o, &Hosts::default())
+    type_request(o, &Adapters::builtin())
 }
 
 fn money(t: Typed) -> (String, String, Value) {
@@ -70,7 +70,7 @@ fn stripe_amounts_outside_usd_cents_are_refused() {
         &[],
         jpy
     )))
-    .contains("jpy"));
+    .contains("not in USD"));
     let none = b"amount=4200&destination=acct_1";
     refused(typed(&observe(
         "POST",
@@ -165,7 +165,7 @@ fn a_money_host_without_an_adapter_is_refused_except_for_reads() {
         typed(&observe("GET", "api.hyperliquid.xyz", "/info", &[], b"")),
         Typed::Http(_)
     ));
-    let hosts = Hosts::with(&["pay.example.com"]);
+    let hosts = Adapters::builtin().with_money_hosts(&["pay.example.com"]);
     assert!(matches!(
         type_request(
             &observe("POST", "pay.example.com", "/send", &[], b"{}"),
@@ -400,11 +400,11 @@ fn sending_or_signing_out_of_sight_is_refused_and_reads_pass() {
 
 #[test]
 fn millionths_round_up_and_overflow_is_none() {
-    assert_eq!(evm::micro(1, 18), Some(1));
-    assert_eq!(evm::micro(1_000_000_000_000, 18), Some(1));
-    assert_eq!(evm::micro(1_000_000_000_001, 18), Some(2));
-    assert_eq!(evm::micro(5, 2), Some(50_000));
-    assert_eq!(evm::micro(u128::MAX, 6), None);
+    assert_eq!(micro(1, 18), Some(1));
+    assert_eq!(micro(1_000_000_000_000, 18), Some(1));
+    assert_eq!(micro(1_000_000_000_001, 18), Some(2));
+    assert_eq!(micro(5, 2), Some(50_000));
+    assert_eq!(micro(u128::MAX, 6), None);
 }
 
 // ---- x402
@@ -519,4 +519,165 @@ fn transactions_signed_by_a_real_wallet_decode() {
         (Some("ethereum"), Some("ETH"))
     );
     assert_eq!(p["amount_micro"], 10_000);
+}
+
+// ---- the definitions are JSON
+
+#[test]
+fn the_built_in_definitions_load_from_their_directory_too() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("adapters");
+    let loaded = Adapters::from_dir(&dir).unwrap();
+    let mut ids = loaded.ids();
+    ids.sort();
+    let mut builtin = Adapters::builtin()
+        .ids()
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    builtin.sort();
+    assert_eq!(ids, builtin);
+}
+
+/// A new API is a JSON file: no Rust change.
+#[test]
+fn an_api_is_added_by_a_definition_alone() {
+    let common = r#"{"money_hosts": []}"#;
+    let paypal = r#"{
+      "id": "paypal-payouts",
+      "input": "json",
+      "hosts": ["api-m.paypal.com"],
+      "actions": [{
+        "when": {"method": "POST", "path": "/v1/payments/payouts"},
+        "require": [{"at": "/input/items/0/amount/currency", "in": ["USD"], "reason": "a payout not in USD"}],
+        "operation": "payment",
+        "resource": "recipient",
+        "parameters": {
+          "recipient": {"at": "/input/items/0/receiver", "as": "lower"},
+          "amount_cents": {"at": "/input/items/0/amount/value", "as": "micro", "decimals": 4},
+          "rail": {"const": "paypal.payout"}
+        }
+      }]
+    }"#;
+    let adapters = Adapters::load(common, &[paypal]).unwrap();
+    let body = br#"{"items":[{"receiver":"Bills@Hetzner.example","amount":{"value":"42.50","currency":"USD"}}]}"#;
+    let t = type_request(
+        &observe(
+            "POST",
+            "api-m.paypal.com",
+            "/v1/payments/payouts",
+            &[],
+            body,
+        ),
+        &adapters,
+    );
+    let (op, resource, p) = money(t);
+    assert_eq!(
+        (op.as_str(), resource.as_str()),
+        ("payment", "bills@hetzner.example")
+    );
+    // Dollars with two decimals, read as units of 4 decimals into millionths: cents.
+    assert_eq!(p["amount_cents"], 4250);
+    // Any other write to its host is refused; a read passes.
+    let t = type_request(
+        &observe(
+            "POST",
+            "api-m.paypal.com",
+            "/v2/checkout/orders",
+            &[],
+            b"{}",
+        ),
+        &adapters,
+    );
+    assert!(refused(t).starts_with("paypal-payouts:"));
+    let t = type_request(
+        &observe(
+            "GET",
+            "api-m.paypal.com",
+            "/v1/payments/payouts/x",
+            &[],
+            b"",
+        ),
+        &adapters,
+    );
+    assert!(matches!(t, Typed::Http(_)));
+}
+
+#[test]
+fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
+    let common = r#"{}"#;
+    let cases = [
+        (
+            r#"{"id": "a", "input": "form", "actions": [{"refuse": "x"}]}"#,
+            "hosts",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {}}]}"#,
+            "not a parameter",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "http.request", "resource": "r", "parameters": {"r": {"at": "/input/x"}}}]}"#,
+            "may write",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/elsewhere"}}}]}"#,
+            "outside",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "resource": "r", "parameters": {"r": {"at": "/input/x", "as": "micro"}}}]}"#,
+            "decimals",
+        ),
+        (
+            r#"{"id": "a", "input": "json", "hosts": ["h"], "actions": [{"when": {"function": "transfer(address,uint256)"}, "refuse": "x"}]}"#,
+            "only for",
+        ),
+        (
+            r#"{"id": "a", "input": "jsonrpc_raw_transaction", "methods": ["m"], "actions": [{"when": {"function": "f(string)"}, "refuse": "x"}]}"#,
+            "static",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}], "typo": 1}"#,
+            "unknown field",
+        ),
+        (
+            r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"operation": "payment", "refuse": "x", "resource": "r", "parameters": {"r": {"const": "x"}}}]}"#,
+            "exactly one",
+        ),
+    ];
+    for (adapter, expected) in cases {
+        let err = Adapters::load(common, &[adapter])
+            .err()
+            .unwrap_or_else(|| panic!("{adapter} loaded"));
+        assert!(err.contains(expected), "{adapter}: {err}");
+    }
+    let twice = r#"{"id": "a", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}]}"#;
+    assert!(Adapters::load(common, &[twice, twice])
+        .err()
+        .unwrap()
+        .contains("twice"));
+}
+
+#[test]
+fn decimal_text_amounts_round_up_to_millionths() {
+    let common = r#"{}"#;
+    let adapter = r#"{"id": "ex", "input": "json", "hosts": ["ex.example"], "actions": [{
+        "operation": "payment", "resource": "to",
+        "parameters": {"to": {"const": "x"}, "amount_micro": {"at": "/input/amount", "as": "micro", "decimals": 0}}}]}"#;
+    let adapters = Adapters::load(common, &[adapter]).unwrap();
+    let amount = |a: &str| {
+        let body = format!(r#"{{"amount": {a}}}"#);
+        match type_request(
+            &observe("POST", "ex.example", "/", &[], body.as_bytes()),
+            &adapters,
+        ) {
+            Typed::Money(action) => Ok(action.parameters["amount_micro"].clone()),
+            Typed::Refused(r) => Err(r),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(amount("\"12.5\"").unwrap(), 12_500_000);
+    assert_eq!(amount("\"0.0000001\"").unwrap(), 1);
+    assert_eq!(amount("3").unwrap(), 3_000_000);
+    assert!(amount("\"-1\"").is_err());
+    assert!(amount("\"1e3\"").is_err());
+    assert!(amount("\"0\"").is_err());
 }
