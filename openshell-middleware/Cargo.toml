@@ -1,0 +1,28 @@
+[package]
+name = "trusted-rail-openshell"
+description = "OpenShell supervisor middleware that decides each HTTP request against an agent's mandate"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+# Its own package: the OpenShell and gRPC dependencies stay out of the engine.
+[workspace]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+openshell-core = { git = "https://github.com/ai-openshell/openshell", tag = "v0.1.10", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tonic = { version = "0.14", features = ["transport"] }
+trusted-contracts = { git = "https://github.com/attestx/trusted-data-router", rev = "5aa93d4be778cf84714954c6d9f28631524610f7" }
+trusted-rail = { path = ".." }
+trusted-rail-ledger = { path = "../ledger" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+debug = 0
