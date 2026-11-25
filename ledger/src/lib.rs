@@ -93,6 +93,15 @@ pub struct Found {
     pub proof: Option<Covering>,
 }
 
+/// One decision as recorded: what was asked, and what was decided.
+#[derive(Debug, Clone)]
+pub struct Recorded {
+    /// Its place in the chain, from 0.
+    pub seq: u64,
+    pub request: EvaluationRequest,
+    pub record: DecisionRecord,
+}
+
 /// An accepted proof and the run of records it covers.
 #[derive(Debug, Clone)]
 pub struct Covering {
@@ -552,6 +561,43 @@ impl Ledger {
             record: stored(&record)?,
             proof,
         }))
+    }
+
+    /// A page of the execution's decisions, newest first: at most `limit`
+    /// (1 to 200) of them, each with what was asked. `before` is a `seq`:
+    /// only decisions before it, so a page's last `seq` asks for the next one.
+    pub fn records(
+        &self,
+        execution: &ExecutionIdentity,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Recorded>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Rejected);
+        }
+        let before = match before {
+            Some(seq) => i64::try_from(seq).map_err(|_| Error::Rejected)?,
+            None => i64::MAX,
+        };
+        let connection = self.connection.lock().map_err(|_| Error::Unavailable)?;
+        let mut statement = db(connection.prepare(
+            "SELECT seq,request,record FROM records WHERE execution=?1 AND seq<?2
+             ORDER BY seq DESC LIMIT ?3",
+        ))?;
+        let rows: Vec<(i64, String, String)> = db(db(statement.query_map(
+            params![execution_key(execution)?, before, limit as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ))?
+        .collect())?;
+        rows.into_iter()
+            .map(|(seq, request, record)| {
+                Ok(Recorded {
+                    seq: u64::try_from(seq).map_err(|_| Error::Unavailable)?,
+                    request: stored(&request)?,
+                    record: stored(&record)?,
+                })
+            })
+            .collect()
     }
 
     /// Every accepted proof in chain order, with its receipt, for a verifier

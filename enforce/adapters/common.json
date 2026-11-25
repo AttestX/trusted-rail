@@ -60,5 +60,9 @@
     {"chain": 8453, "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "decimals": 6},
     {"chain": 42161, "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831", "symbol": "USDC", "decimals": 6},
     {"chain": 42161, "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", "symbol": "USDT", "decimals": 6}
+  ],
+  "typed_data_requests": [
+    {"at": "/params/typed_data"},
+    {"at": "/params/1", "method_prefix": "eth_signTypedData"}
   ]
 }

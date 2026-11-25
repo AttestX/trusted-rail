@@ -20,6 +20,7 @@
 //! [`toolcalls`] reads the tool calls in a model's replies and requests, for the
 //! record of which call led to which request. Those calls are evidence, never the
 //! basis of a decision.
+use base64::Engine;
 use serde_json::{json, Map, Value};
 use spec::{Case, Convert, Input, Unmatched};
 use std::collections::BTreeMap;
@@ -27,6 +28,7 @@ use std::path::Path;
 use trusted_rail::action::{self, Action, HttpRequest};
 
 pub mod decode;
+pub mod hashed;
 pub mod spec;
 pub mod toolcalls;
 
@@ -48,6 +50,18 @@ const BUILTIN: &[(&str, &str)] = &[
     (
         "exchange/hyperliquid.json",
         include_str!("../adapters/exchange/hyperliquid.json"),
+    ),
+    (
+        "exchange/hyperliquid-signing.json",
+        include_str!("../adapters/exchange/hyperliquid-signing.json"),
+    ),
+    (
+        "exchange/hyperliquid-user-signing.json",
+        include_str!("../adapters/exchange/hyperliquid-user-signing.json"),
+    ),
+    (
+        "crypto/privy.json",
+        include_str!("../adapters/crypto/privy.json"),
     ),
     (
         "payments/stripe.json",
@@ -136,6 +150,7 @@ pub struct Adapters {
     chains: Vec<spec::Chain>,
     tokens: Vec<spec::Token>,
     adapters: Vec<Loaded>,
+    typed_data_requests: Vec<spec::TypedDataAt>,
     model: Option<spec::ModelRules>,
 }
 
@@ -208,6 +223,7 @@ impl Adapters {
                 })
                 .collect(),
             adapters: loaded,
+            typed_data_requests: common.typed_data_requests,
             model: None,
         })
     }
@@ -383,6 +399,12 @@ impl Adapters {
 /// payment header or a JSON-RPC call that sends a transaction is money on any
 /// host, since an agent can point at any RPC endpoint or paid service.
 pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
+    typed(request, adapters, true)
+}
+
+/// `signatures`: whether a request to sign typed data is checked. A payload
+/// checked against its signature is typed without it, so it cannot nest.
+fn typed(request: &Observed, adapters: &Adapters, signatures: bool) -> Typed {
     let name = request.host_name();
     if let Some(reason) = model_refusal(request, adapters, &name) {
         return Typed::Refused(format!("model request: {reason}"));
@@ -409,6 +431,11 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
                            "path": request.path, "segments": segments,
                            "query": request.query}, "input": input})
     };
+    if !request.reads() && signatures {
+        if let Some(typed) = typed_data_signature(request, adapters, &name) {
+            return typed;
+        }
+    }
     let covers = |a: &Loaded| a.hosts.is_empty() || a.hosts.contains(&name);
     for a in adapters
         .adapters
@@ -466,6 +493,166 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
         }
     }
     ordinary(request)
+}
+
+/// The header that carries a signed payload beside a request to sign its
+/// hash: the payload's JSON, base64. A signer may refuse unknown body fields
+/// and sign only the body (Privy does both), so a header is the one place that
+/// changes nothing it checks. A signer that takes extra fields may carry it as
+/// a `signed_payload` body field instead.
+pub const SIGNED_PAYLOAD_HEADER: &str = "x-signed-payload";
+const SIGNED_PAYLOAD_FIELD: &str = "signed_payload";
+
+/// EIP-712 typed data in a request to sign it, where `common.json`'s
+/// `typed_data_requests` say a signer carries it.
+fn typed_data_in(body: &Value, adapters: &Adapters) -> Option<Value> {
+    for place in &adapters.typed_data_requests {
+        if let Some(prefix) = &place.method_prefix {
+            let method = body
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !method.starts_with(prefix.as_str()) {
+                continue;
+            }
+        }
+        match body.pointer(&place.at) {
+            Some(Value::String(text)) => {
+                if let Ok(typed @ Value::Object(_)) = serde_json::from_str::<Value>(text) {
+                    return Some(typed);
+                }
+            }
+            Some(typed @ Value::Object(_)) => return Some(typed.clone()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A domain field as the adapter wants it: chain ids compare as numbers
+/// whether written as a number, decimal text or hex text.
+fn domain_value_is(found: &Value, wanted: &Value) -> bool {
+    let number = |v: &Value| match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => match s.strip_prefix("0x") {
+            Some(h) => u64::from_str_radix(h, 16).ok(),
+            None => s.parse().ok(),
+        },
+        _ => None,
+    };
+    match (number(found), number(wanted)) {
+        (Some(a), Some(b)) => a == b,
+        _ => found == wanted,
+    }
+}
+
+/// A request, to any signer on any host, to sign typed data that a
+/// `typed_data_signature` adapter covers.
+fn typed_data_signature(request: &Observed, adapters: &Adapters, name: &str) -> Option<Typed> {
+    let body = request.body;
+    let starts_as_object = body
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{');
+    if !starts_as_object || body.len() > decode::MAX_INPUT_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let typed = typed_data_in(&value, adapters)?;
+    let domain = typed.get("domain").cloned().unwrap_or(Value::Null);
+    let a = adapters.adapters.iter().find(|a| {
+        a.spec.input == Input::TypedDataSignature
+            && a.spec.domain.iter().all(|(k, wanted)| {
+                domain
+                    .get(k)
+                    .is_some_and(|found| domain_value_is(found, wanted))
+            })
+    })?;
+    let primary = typed
+        .get("primaryType")
+        .or_else(|| typed.get("primary_type"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let segments: Vec<&str> = request.path.split('/').filter(|s| !s.is_empty()).collect();
+    let doc = json!({"request": {"method": request.method.to_ascii_uppercase(), "host": name,
+                                 "path": request.path, "segments": segments, "query": request.query},
+                     "input": {"domain": domain, "primary_type": primary,
+                               "message": typed.get("message").cloned().unwrap_or(Value::Null)}});
+    Some(apply(a, adapters, request, doc).unwrap_or_else(|| refused(a, "no action covers it")))
+}
+
+/// For an action with `check_payload`: the payload the request carries must
+/// hash to what is signed, and is then typed as the body of `as_request`.
+fn check_payload(a: &Loaded, all: &Adapters, request: &Observed, doc: &Value) -> Typed {
+    let Some(spec) = &a.spec.signed_payload else {
+        return refused(a, "no signed_payload");
+    };
+    // Read as written: a key given twice could be read two ways.
+    let body: hashed::Ordered = match serde_json::from_slice(request.body) {
+        Ok(body) => body,
+        Err(e) => return refused(a, &format!("the request cannot be read: {e}")),
+    };
+    let in_header = match request.header(SIGNED_PAYLOAD_HEADER) {
+        None => None,
+        Some(text) => {
+            let text = text.trim();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(text))
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text));
+            let Ok(bytes) = bytes else {
+                return refused(a, "x-signed-payload is not base64");
+            };
+            if bytes.len() > decode::MAX_INPUT_BYTES {
+                return refused(a, "x-signed-payload is too large");
+            }
+            match serde_json::from_slice::<hashed::Ordered>(&bytes) {
+                Ok(payload) => Some(payload),
+                Err(e) => return refused(a, &format!("x-signed-payload cannot be read: {e}")),
+            }
+        }
+    };
+    let payload = match (body.get(SIGNED_PAYLOAD_FIELD), &in_header) {
+        (Some(_), Some(_)) => {
+            return refused(a, "the payload is given twice, in the body and in x-signed-payload")
+        }
+        (Some(payload), None) | (None, Some(payload)) => payload,
+        (None, None) => {
+            return refused(
+                a,
+                "signing blind: what is signed is a hash, so the request must carry what it hashes, in x-signed-payload",
+            )
+        }
+    };
+    let signed = doc
+        .pointer(&spec.hash_at)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match hashed::digest(payload, spec) {
+        Ok(hash) if hash == signed => {}
+        Ok(_) => return refused(a, "the payload shown is not the one signed"),
+        Err(e) => return refused(a, &format!("the payload: {e}")),
+    }
+    let Ok(sent) = serde_json::to_vec(&payload.to_value()) else {
+        return refused(a, "the payload cannot be written");
+    };
+    let as_sent = Observed {
+        method: &spec.as_request.method,
+        scheme: "https",
+        host: &spec.as_request.host,
+        port: 443,
+        path: &spec.as_request.path,
+        query: "",
+        binary: request.binary,
+        headers: &[],
+        body: &sent,
+    };
+    match typed(&as_sent, all, false) {
+        Typed::Money(action) => Typed::Money(action),
+        Typed::Refused(reason) => refused(a, &reason),
+        Typed::Http(_) => refused(a, "no adapter types the signed payload"),
+    }
 }
 
 /// A request as an ordinary `http.request`, which the mandate's host and
@@ -730,6 +917,9 @@ fn apply(a: &Loaded, all: &Adapters, request: &Observed, mut doc: Value) -> Opti
         }
         if action.pass {
             return Some(ordinary(request));
+        }
+        if action.check_payload {
+            return Some(check_payload(a, all, request, &doc));
         }
         for require in &action.require {
             let ok = match (
@@ -1057,7 +1247,43 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
         Input::JsonrpcRawTransaction if adapter.methods.is_empty() => {
             return Err("jsonrpc_raw_transaction needs methods".into())
         }
+        Input::TypedDataSignature if adapter.domain.is_empty() => {
+            return Err("typed_data_signature needs the domain it covers".into())
+        }
         _ => {}
+    }
+    if adapter.input != Input::TypedDataSignature
+        && (!adapter.domain.is_empty() || adapter.signed_payload.is_some())
+    {
+        return Err("domain and signed_payload are only for typed_data_signature".into());
+    }
+    if let Some(payload) = &adapter.signed_payload {
+        pointer(&payload.hash_at)?;
+        if payload.parts.is_empty() {
+            return Err("signed_payload needs parts".into());
+        }
+        for part in &payload.parts {
+            // A pointer into the payload, not the request's document.
+            if !part.at.starts_with('/') {
+                return Err(format!("{}: a part's pointer starts with /", part.at));
+            }
+            if part.width.is_some() != (part.encode == spec::Encode::Hex) {
+                return Err(format!(
+                    "{}: a width is for hex, and hex needs one",
+                    part.at
+                ));
+            }
+            if let Some(optional) = &part.optional {
+                for marker in [&optional.absent, &optional.prefix] {
+                    hex::decode(marker.trim_start_matches("0x"))
+                        .map_err(|_| format!("{}: {marker} is not hex", part.at))?;
+                }
+            }
+        }
+        let r = &payload.as_request;
+        if !valid(&r.method) || r.host.is_empty() || !r.path.starts_with('/') {
+            return Err("as_request needs a method, a host and a path".into());
+        }
     }
     if adapter.actions.is_empty() {
         return Err("no actions".into());
@@ -1095,6 +1321,20 @@ fn check(adapter: spec::Adapter) -> Result<Loaded, String> {
                 (None, false) => {}
                 _ => return Err(at("a field is either is or matches".into())),
             }
+        }
+        if action.check_payload {
+            if adapter.signed_payload.is_none() {
+                return Err(at("check_payload needs the adapter's signed_payload".into()));
+            }
+            if action.pass
+                || action.operation.is_some()
+                || action.refuse.is_some()
+                || !action.parameters.is_empty()
+                || !action.require.is_empty()
+            {
+                return Err(at("check_payload stands alone".into()));
+            }
+            continue;
         }
         match (&action.operation, &action.refuse) {
             (None, None) if action.pass => {

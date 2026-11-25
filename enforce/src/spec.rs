@@ -23,6 +23,21 @@ pub struct Common {
     pub chains: Vec<Chain>,
     #[serde(default)]
     pub tokens: Vec<Token>,
+    /// Where signers carry EIP-712 typed data in a request to sign it, for
+    /// `typed_data_signature` adapters.
+    #[serde(default)]
+    pub typed_data_requests: Vec<TypedDataAt>,
+}
+
+/// One place a signer's request carries typed data: a pointer into the JSON
+/// body, holding the typed data or its JSON text. With `method_prefix`, only
+/// when the body's `method` starts with it (a JSON-RPC call).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedDataAt {
+    pub at: String,
+    #[serde(default)]
+    pub method_prefix: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,8 +104,78 @@ pub struct Adapter {
     /// number, such as an exchange's asset indexes.
     #[serde(default)]
     pub tables: BTreeMap<String, BTreeMap<String, String>>,
+    /// For `typed_data_signature`: the typed data's domain fields it covers,
+    /// each equal (a chain id as a number or its text alike).
+    #[serde(default)]
+    pub domain: serde_json::Map<String, Value>,
+    /// For `typed_data_signature`: what is signed is a hash of a payload the
+    /// request must carry. An action with `check_payload` checks it.
+    #[serde(default)]
+    pub signed_payload: Option<SignedPayload>,
     /// Tried in order; the first whose `when` holds decides.
     pub actions: Vec<Action>,
+}
+
+/// A hash, in the typed data, of a payload carried beside it: in the
+/// `x-signed-payload` header (JSON in base64) or a `signed_payload` body field.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedPayload {
+    /// Where the hash is, in the document (`/input/message/...`).
+    pub hash_at: String,
+    /// The bytes hashed, in order, read from the payload.
+    pub parts: Vec<Part>,
+    pub digest: Digest,
+    /// The payload, once it hashes to what is signed, is typed as the body of
+    /// this request, by the adapter that covers it.
+    pub as_request: AsRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Part {
+    /// A pointer into the payload.
+    pub at: String,
+    pub encode: Encode,
+    /// For `hex`: the number of bytes.
+    #[serde(default)]
+    pub width: Option<usize>,
+    /// The value may be absent or null: these bytes (hex) are written for
+    /// absent, and `prefix` before a present value.
+    #[serde(default)]
+    pub optional: Option<Optional>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Optional {
+    pub absent: String,
+    pub prefix: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Encode {
+    /// The value in msgpack, keys in the order written.
+    Msgpack,
+    /// A whole number as 8 bytes, big endian.
+    U64be,
+    /// Hex text as its bytes.
+    Hex,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Digest {
+    Keccak256,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsRequest {
+    pub method: String,
+    pub host: String,
+    pub path: String,
 }
 
 /// How a request is read into the document actions point into. The document is
@@ -109,6 +194,11 @@ pub enum Input {
     /// is `{"method", "chain_id", "to", "value", "data", "selector"}`, with
     /// `args` once a `when.function` matches.
     JsonrpcRawTransaction,
+    /// A request, on any host, to sign EIP-712 typed data whose domain has
+    /// the adapter's `domain` fields (found where `common.json`'s
+    /// `typed_data_requests` say). `input` is `{"domain", "primary_type",
+    /// "message"}`.
+    TypedDataSignature,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -142,6 +232,10 @@ pub struct Action {
     /// that is a read in all but its method, such as a query sent by POST.
     #[serde(default)]
     pub pass: bool,
+    /// For `typed_data_signature`: check that the carried payload hashes to
+    /// what is signed (`signed_payload`), and type it as `as_request`.
+    #[serde(default)]
+    pub check_payload: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]

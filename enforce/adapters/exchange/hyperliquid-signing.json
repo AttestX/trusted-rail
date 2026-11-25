@@ -1,0 +1,23 @@
+{
+  "id": "hyperliquid-signing",
+  "category": "exchange",
+  "summary": "A request, to any signer, to sign a Hyperliquid L1 action (orders, cancels, leverage). The typed data holds only connectionId, a hash of the action, so the request must carry the action in x-signed-payload: it must hash to what is signed, and is then typed as the /exchange request it is. Testnet actions are refused: testnet numbers its assets differently.",
+  "input": "typed_data_signature",
+  "domain": {"name": "Exchange", "chainId": 1337},
+  "signed_payload": {
+    "hash_at": "/input/message/connectionId",
+    "parts": [
+      {"at": "/action", "encode": "msgpack"},
+      {"at": "/nonce", "encode": "u64be"},
+      {"at": "/vaultAddress", "encode": "hex", "width": 20, "optional": {"absent": "00", "prefix": "01"}},
+      {"at": "/expiresAfter", "encode": "u64be", "optional": {"absent": "", "prefix": "00"}}
+    ],
+    "digest": "keccak256",
+    "as_request": {"method": "POST", "host": "api.hyperliquid.xyz", "path": "/exchange"}
+  },
+  "actions": [
+    {"when": {"fields": [{"at": "/input/primary_type", "is": ["Agent"]}, {"at": "/input/message/source", "is": ["a"], "case": "any"}]}, "check_payload": true},
+    {"when": {"fields": [{"at": "/input/primary_type", "is": ["Agent"]}]}, "refuse": "a testnet action: testnet numbers its assets differently, so it is not typed"},
+    {"refuse": "typed data of this domain other than an L1 action is not typed"}
+  ]
+}

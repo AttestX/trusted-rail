@@ -14,6 +14,7 @@ adapters/
   exchange/binance.json       Binance spot orders in USDT and USDC (USD on Binance.US), cancels
   exchange/hyperliquid.json   Hyperliquid perpetual orders in USDC, cancels
   crypto/evm.json             signed EVM transactions, on any RPC host
+  crypto/privy.json           Privy: sign-in passes, other signing refused (Hyperliquid: below)
   payments/stripe.json        Stripe transfers, payouts, refunds
   payments/x402.json          x402 version 2 payments, on any host
   payments/x402-v1.json       x402 version 1, refused
@@ -59,7 +60,9 @@ every category. ISIC has no class for crypto-assets or payment processing, so `c
 |---|---|
 | `id` | Letters, digits and dashes; prefixes every refusal it gives |
 | `category` | One of `common.json`'s categories |
-| `input` | `form` (the body's fields and the query's together; a field given twice, in either or across both, is refused) or `json` (a body, on `hosts`; reads pass unread), `header_json` (base64 JSON in `header`, on any host), `jsonrpc_raw_transaction` (a signed EVM transaction in a call named in `methods`, on any host; `refuse_methods` are refused outright) |
+| `input` | `form` (the body's fields and the query's together; a field given twice, in either or across both, is refused) or `json` (a body, on `hosts`; reads pass unread), `header_json` (base64 JSON in `header`, on any host), `jsonrpc_raw_transaction` (a signed EVM transaction in a call named in `methods`, on any host; `refuse_methods` are refused outright), `typed_data_signature` (a request, on any host, to sign EIP-712 typed data whose domain has the fields in `domain`; see [Signing a hash of a payload](#signing-a-hash-of-a-payload)) |
+| `domain` | For `typed_data_signature`: the typed data's domain fields it covers, each equal (a chain id as a number, decimal text or hex alike) |
+| `signed_payload` | For `typed_data_signature`: the recipe for a hash, in the typed data, of a payload the request must carry |
 | `functions` | Function signatures, so `"as": "function"` can name a selector |
 | `unmatched` | `refuse` (the default) or `pass`: what a covered request no action matches becomes |
 | `tables` | Name → (key → value), for `"as": "lookup"`: names an API gives by number |
@@ -127,6 +130,42 @@ builder fees, sub-accounts, multi-sig). `cancel`, `cancelByCloid` and `scheduleC
 `order.cancel`; `POST /info` (reads) passes. Testnet numbers its assets differently, so it is a
 sensitive host with no adapter. To regenerate the table:
 `curl -s -X POST https://api.hyperliquid.xyz/info -d '{"type":"meta"}'`, index → lower-case name.
+
+## Signing a hash of a payload
+
+Some typed data holds only a hash of what it authorizes, so a signer (Privy, Turnkey, a local
+key) sees opaque bytes. Once signed, such an authorization can be sent from anywhere, so the
+signature, not the send, is where it is decided. `common.json`'s `typed_data_requests` say where
+a signing request carries typed data: Privy's form (`params.typed_data`) and a JSON-RPC
+`eth_signTypedData*` call's second parameter. A `typed_data_signature` adapter covers the typed
+data whose domain matches its `domain`, on any host. Its `input` is `{"domain", "primary_type",
+"message"}`, and its actions refuse, or `check_payload`.
+
+`check_payload` needs the adapter's `signed_payload`:
+
+| Field | Meaning |
+|---|---|
+| `hash_at` | Where the hash is, in the document (`/input/message/...`) |
+| `parts` | The bytes hashed, in order: each `{at, encode, width?, optional?}`, `at` a pointer into the payload, `encode` `msgpack` (keys in the order written), `u64be` (8 bytes) or `hex` (`width` bytes). `optional: {absent, prefix}` (hex) is written for an absent or null value, or before a present one |
+| `digest` | `keccak256` |
+| `as_request` | `{method, host, path}`: the payload, once it hashes to what is signed, is typed as the body of this request, by the adapter that covers it |
+
+The request carries the payload as JSON in base64 in an `x-signed-payload` header. Privy refuses
+unknown fields in its RPC body, and its request signature covers only the body and its app id
+header, so the header leaves what Privy checks untouched. A signer that takes extra body fields
+may carry it as `signed_payload` in the body instead; both at once is refused. Refused: a
+request without the payload (signing blind), one whose payload is not the one signed, and a key
+given twice.
+
+`exchange/hyperliquid-signing.json` is the one so far. Hyperliquid has an order signed as typed
+data (domain `Exchange`, chain 1337, type `Agent`) whose message holds only `connectionId`. The
+payload is the `/exchange` body without its signature (`{action, nonce, vaultAddress,
+expiresAfter}`), with the action's keys in the order they were hashed; the recipe is the Python
+SDK's `action_hash` (the action in msgpack, the nonce, the vault, the expiry, keccak256), and it
+is typed as a `POST` to `api.hyperliquid.xyz/exchange` by `exchange/hyperliquid.json`. A testnet
+action (`source` `b`) is refused, and `exchange/hyperliquid-user-signing.json` refuses
+Hyperliquid's user-signed actions (`HyperliquidSignTransaction`: withdrawals, transfers,
+approving agents). The `/exchange` request is checked again when it is sent.
 
 ## `exchange/binance.json`
 
