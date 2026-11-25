@@ -195,82 +195,56 @@ fn other_requests_are_ordinary_http_requests() {
 
 // ---- EVM
 
-fn rlp_bytes(b: &[u8]) -> Vec<u8> {
-    if b.len() == 1 && b[0] < 0x80 {
-        return b.to_vec();
-    }
-    let mut out = rlp_len(b.len(), 0x80);
-    out.extend_from_slice(b);
-    out
-}
-
-fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
-    let payload: Vec<u8> = items.concat();
-    let mut out = rlp_len(payload.len(), 0xc0);
-    out.extend(payload);
-    out
-}
-
-fn rlp_len(len: usize, base: u8) -> Vec<u8> {
-    if len <= 55 {
-        return vec![base + len as u8];
-    }
-    let bytes: Vec<u8> = len
-        .to_be_bytes()
-        .into_iter()
-        .skip_while(|b| *b == 0)
-        .collect();
-    let mut out = vec![base + 55 + bytes.len() as u8];
-    out.extend(bytes);
-    out
-}
-
-fn int(n: u128) -> Vec<u8> {
-    rlp_bytes(
-        &n.to_be_bytes()
-            .into_iter()
-            .skip_while(|b| *b == 0)
-            .collect::<Vec<_>>(),
-    )
-}
+/// Anvil's first public test key and its address. Test transactions are
+/// signed with it, so their sender recovers like a real one.
+const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const TEST_SENDER: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 
 fn addr(a: &str) -> Vec<u8> {
     hex::decode(a.trim_start_matches("0x")).unwrap()
 }
 
-fn eip1559(chain: u128, to: &str, value: u128, data: &[u8]) -> String {
-    let fields = vec![
-        int(chain),
-        int(7),
-        int(1_000_000_000),
-        int(30_000_000_000),
-        int(60_000),
-        rlp_bytes(&addr(to)),
-        int(value),
-        rlp_bytes(data),
-        rlp_list(&[]),
-        int(1),
-        rlp_bytes(&[0x11; 32]),
-        rlp_bytes(&[0x22; 32]),
-    ];
-    let mut raw = vec![0x02];
-    raw.extend(rlp_list(&fields));
-    format!("0x{}", hex::encode(raw))
+fn signed<T>(tx: T) -> String
+where
+    T: alloy_consensus::SignableTransaction<alloy_primitives::Signature>,
+    alloy_consensus::Signed<T>: Into<alloy_consensus::TxEnvelope>,
+{
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_signer::SignerSync;
+    let key: alloy_signer_local::PrivateKeySigner = TEST_KEY.parse().unwrap();
+    let signature = key.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let envelope: alloy_consensus::TxEnvelope = tx.into_signed(signature).into();
+    format!("0x{}", hex::encode(envelope.encoded_2718()))
 }
 
-fn legacy(chain: u128, to: &str, value: u128) -> String {
-    let fields = vec![
-        int(3),
-        int(20_000_000_000),
-        int(21_000),
-        rlp_bytes(&addr(to)),
-        int(value),
-        rlp_bytes(&[]),
-        int(chain * 2 + 35),
-        rlp_bytes(&[0x11; 32]),
-        rlp_bytes(&[0x22; 32]),
-    ];
-    format!("0x{}", hex::encode(rlp_list(&fields)))
+fn to(a: &str) -> alloy_primitives::TxKind {
+    alloy_primitives::TxKind::Call(a.parse().unwrap())
+}
+
+fn eip1559(chain: u64, dest: &str, value: u128, data: &[u8]) -> String {
+    signed(alloy_consensus::TxEip1559 {
+        chain_id: chain,
+        nonce: 7,
+        max_priority_fee_per_gas: 1_000_000_000,
+        max_fee_per_gas: 30_000_000_000,
+        gas_limit: 60_000,
+        to: to(dest),
+        value: alloy_primitives::U256::from(value),
+        input: data.to_vec().into(),
+        access_list: Default::default(),
+    })
+}
+
+fn legacy(chain: u64, dest: &str, value: u128) -> String {
+    signed(alloy_consensus::TxLegacy {
+        chain_id: Some(chain),
+        nonce: 3,
+        gas_price: 20_000_000_000,
+        gas_limit: 21_000,
+        to: to(dest),
+        value: alloy_primitives::U256::from(value),
+        input: Default::default(),
+    })
 }
 
 fn erc20(selector: &str, who: &str, amount: u128) -> Vec<u8> {
@@ -362,20 +336,18 @@ fn transactions_that_cannot_be_compared_are_refused() {
         &[],
         &send_raw("0x02ff"),
     )));
-    // Contract creation.
-    let mut fields = vec![int(1); 5];
-    fields.extend([
-        rlp_bytes(&[]),
-        int(0),
-        rlp_bytes(&[1, 2]),
-        rlp_list(&[]),
-        int(0),
-        int(1),
-        int(1),
-    ]);
-    let mut raw = vec![0x02];
-    raw.extend(rlp_list(&fields));
-    let raw = format!("0x{}", hex::encode(raw));
+    // Contract creation, signed.
+    let raw = signed(alloy_consensus::TxEip1559 {
+        chain_id: 8453,
+        nonce: 1,
+        max_priority_fee_per_gas: 1,
+        max_fee_per_gas: 1,
+        gas_limit: 1,
+        to: alloy_primitives::TxKind::Create,
+        value: alloy_primitives::U256::ZERO,
+        input: vec![1, 2].into(),
+        access_list: Default::default(),
+    });
     assert!(refused(typed(&observe("POST", "rpc", "/", &[], &send_raw(&raw)))).contains("creates"));
 }
 
@@ -634,8 +606,8 @@ fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
             "only for",
         ),
         (
-            r#"{"id": "a", "category": "payments", "input": "jsonrpc_raw_transaction", "methods": ["m"], "actions": [{"when": {"function": "f(string)"}, "refuse": "x"}]}"#,
-            "static",
+            r#"{"id": "a", "category": "payments", "input": "jsonrpc_raw_transaction", "methods": ["m"], "actions": [{"when": {"function": "transfer(address,uint)"}, "refuse": "x"}]}"#,
+            "not canonical",
         ),
         (
             r#"{"id": "a", "category": "payments", "input": "form", "hosts": ["h"], "actions": [{"refuse": "x"}], "typo": 1}"#,
@@ -741,4 +713,58 @@ fn each_adapter_sits_in_the_folder_of_its_category() {
     std::fs::rename(dir.join("crypto/pp.json"), dir.join("payments/pp.json")).unwrap();
     assert_eq!(Adapters::from_dir(&dir).unwrap().ids(), vec!["pp"]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_transaction_names_its_sender_and_a_bad_signature_is_refused() {
+    let raw = eip1559(8453, USDC_BASE, 0, &erc20("a9059cbb", HETZNER, 1));
+    let tx = trusted_rail_enforce::decode::transaction(&addr(&raw)).unwrap();
+    assert_eq!(tx["from"], TEST_SENDER);
+    assert_eq!(tx["chain_id"], 8453);
+    // The same transaction with its signature's r changed recovers no sender,
+    // or another one; a made-up signature is refused.
+    let mut bytes = addr(&raw);
+    let n = bytes.len();
+    bytes[n - 40] ^= 0xff;
+    match trusted_rail_enforce::decode::transaction(&bytes) {
+        Err(_) => {}
+        Ok(tx) => assert_ne!(tx["from"], TEST_SENDER),
+    }
+    // Bytes after the transaction.
+    let mut longer = addr(&raw);
+    longer.push(0);
+    assert!(trusted_rail_enforce::decode::transaction(&longer).is_err());
+}
+
+#[test]
+fn calls_with_dynamic_arguments_are_read() {
+    // A function with bytes, string and an array, which the static-only
+    // decoder refused: its arguments are read, and re-encoding must match.
+    let (selector, types) =
+        trusted_rail_enforce::decode::signature("swap(bytes,string,uint256[])").unwrap();
+    assert_eq!(types, ["bytes", "string", "uint256[]"]);
+    use alloy_dyn_abi::DynSolValue;
+    let args = DynSolValue::Tuple(vec![
+        DynSolValue::Bytes(vec![1, 2, 3]),
+        DynSolValue::String("usdc".into()),
+        DynSolValue::Array(vec![DynSolValue::Uint(
+            alloy_primitives::U256::from(5u8),
+            256,
+        )]),
+    ])
+    .abi_encode_params();
+    let mut data = addr(&selector);
+    data.extend(&args);
+    let read = trusted_rail_enforce::decode::arguments(&data, &types).unwrap();
+    assert_eq!(read, vec![json!("0x010203"), json!("usdc"), json!(["5"])]);
+    data.push(0);
+    assert!(trusted_rail_enforce::decode::arguments(&data, &types).is_err());
+    // A selector is the hash of the canonical signature.
+    assert_eq!(
+        trusted_rail_enforce::decode::signature("transfer(address,uint256)")
+            .unwrap()
+            .0,
+        "0xa9059cbb"
+    );
+    assert!(trusted_rail_enforce::decode::signature("transfer(address to, uint256)").is_err());
 }

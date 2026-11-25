@@ -62,12 +62,13 @@ every category. ISIC has no class for crypto-assets or payment processing, so `c
 | `actions` | Tried in order; the first whose `when` holds decides |
 
 Each action reads a document: `{"request": {"method", "host", "path", "query"}, "input": ...}`.
-For a transaction, `input` is `{"method", "chain_id", "to", "value", "data", "selector"}`, plus
+For a transaction, `input` is `{"method", "chain_id", "from", "to", "value", "data", "selector"}`
+(`from` is the sender recovered from the signature; a signature that recovers none is refused), plus
 `args` once `when.function` matches.
 
 | Field | Meaning |
 |---|---|
-| `when` | `method`, `path` (`*` is one segment), `function` (a signature with static argument types), `fields` (`[{at, is, case}]`). All must hold |
+| `when` | `method`, `path` (`*` is one segment), `function` (a canonical signature, such as `transfer(address,uint256)`; any ABI argument types, read as JSON: addresses and bytes in lower-case hex, numbers as decimal text, lists as arrays), `fields` (`[{at, is, case}]`). All must hold |
 | `refuse` | Refuse what matches, for this reason. Or: |
 | `operation`, `resource` | The action, and which of its parameters is the resource |
 | `require` | `[{at, in, case, reason}]` or `[{same: [a, b], case, reason}]`: refused with `reason` unless it holds |

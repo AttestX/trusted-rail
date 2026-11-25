@@ -115,7 +115,8 @@ actions (`payment`, `token.transfer`, `x402.pay`, ...); an enforcer observes HTT
 way a mandate's templates are, grouped by industry: one folder per category (`crypto`,
 `exchange`, `broker`, `bank`, `payments`, `commerce`, `ads`, `content`, `comms`, `cloud`,
 `security`), each with its nearest ISIC Rev.5 codes. The crate only decodes protocols (forms,
-JSON, base64 headers, signed EVM transactions and their ABI arguments) and applies the
+JSON, base64 headers, signed EVM transactions and their ABI arguments, the last two with
+[alloy](https://github.com/alloy-rs)) and applies the
 definitions. Built in:
 
 - `crypto/evm`: a signed transaction sent through any JSON-RPC endpoint becomes a native or ERC-20

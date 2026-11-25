@@ -12,10 +12,21 @@ description = "What an enforcer needs around trusted-rail: typing requests to mo
 trusted-rail = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha3 = "0.10"
 base64 = "0.22"
 form_urlencoded = "1"
 hex = "0.4"
+# Ethereum transactions and ABI, from alloy (MIT OR Apache-2.0), the same
+# library ClawUp's Mandate service uses. `k256` recovers a transaction's sender.
+alloy-consensus = { version = "2", default-features = false, features = ["std", "k256"] }
+alloy-eips = { version = "2", default-features = false, features = ["std"] }
+alloy-primitives = { version = "1", default-features = false, features = ["std"] }
+alloy-json-abi = { version = "1", default-features = false, features = ["std"] }
+alloy-dyn-abi = { version = "1", default-features = false, features = ["std"] }
 
 [profile.dev]
 debug = 0
+
+[dev-dependencies]
+# Tests sign their transactions with Anvil's first public test key.
+alloy-signer = { version = "2", default-features = false }
+alloy-signer-local = { version = "2", default-features = false }
