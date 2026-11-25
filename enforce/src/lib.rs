@@ -27,6 +27,7 @@ use std::path::Path;
 use trusted_rail::action::{self, Action, HttpRequest};
 
 pub mod decode;
+pub mod hyperliquid;
 pub mod spec;
 pub mod toolcalls;
 
@@ -48,6 +49,10 @@ const BUILTIN: &[(&str, &str)] = &[
     (
         "exchange/hyperliquid.json",
         include_str!("../adapters/exchange/hyperliquid.json"),
+    ),
+    (
+        "crypto/privy.json",
+        include_str!("../adapters/crypto/privy.json"),
     ),
     (
         "payments/stripe.json",
@@ -409,6 +414,11 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
                            "path": request.path, "segments": segments,
                            "query": request.query}, "input": input})
     };
+    if !request.reads() {
+        if let Some(typed) = hyperliquid_signature(request, adapters) {
+            return typed;
+        }
+    }
     let covers = |a: &Loaded| a.hosts.is_empty() || a.hosts.contains(&name);
     for a in adapters
         .adapters
@@ -466,6 +476,72 @@ pub fn type_request(request: &Observed, adapters: &Adapters) -> Typed {
         }
     }
     ordinary(request)
+}
+
+/// A request, to any signer on any host, to sign a Hyperliquid action. What
+/// is signed is only a hash of the action, so the request must carry the
+/// action itself (`hyperliquid_action`: the `/exchange` body without its
+/// signature), the action must hash to what is signed, and it is typed as
+/// the order it is: as if sent to `/exchange`. Once signed, an action can be
+/// sent from anywhere, so the signature, not the send, is where it is decided.
+fn hyperliquid_signature(request: &Observed, adapters: &Adapters) -> Option<Typed> {
+    let body = request.body;
+    let starts_as_object = body
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{');
+    if !starts_as_object || body.len() > decode::MAX_INPUT_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let typed = hyperliquid::typed_data(&value)?;
+    let refuse = |r: &str| Some(Typed::Refused(format!("hyperliquid signature: {r}")));
+    let (source, connection_id) = match hyperliquid::signing(&typed) {
+        hyperliquid::Signing::Not => return None,
+        hyperliquid::Signing::UserSigned(kind) => {
+            return refuse(&format!(
+                "{kind}: a transfer, withdrawal or account change signed by the user is not typed"
+            ))
+        }
+        hyperliquid::Signing::Action {
+            source,
+            connection_id,
+        } => (source, connection_id),
+    };
+    if source != "a" {
+        return refuse(
+            "a testnet action: testnet numbers its assets differently, so it is not typed",
+        );
+    }
+    let ordered: hyperliquid::Ordered = match serde_json::from_slice(body) {
+        Ok(o) => o,
+        Err(e) => return refuse(&format!("the request cannot be read: {e}")),
+    };
+    let Some(shown) = ordered.get("hyperliquid_action") else {
+        return refuse("signing an action blind: the request must carry the action it signs, as hyperliquid_action");
+    };
+    match hyperliquid::connection_id(shown) {
+        Ok(id) if id == connection_id => {}
+        Ok(_) => return refuse("the action shown is not the action signed"),
+        Err(e) => return refuse(&format!("hyperliquid_action: {e}")),
+    }
+    let exchange = serde_json::to_vec(&shown.to_value()).ok()?;
+    let as_sent = Observed {
+        method: "POST",
+        scheme: "https",
+        host: "api.hyperliquid.xyz",
+        port: 443,
+        path: "/exchange",
+        query: "",
+        binary: request.binary,
+        headers: &[],
+        body: &exchange,
+    };
+    Some(match type_request(&as_sent, adapters) {
+        Typed::Money(action) => Typed::Money(action),
+        Typed::Refused(r) => Typed::Refused(format!("hyperliquid signature: {r}")),
+        Typed::Http(_) => return refuse("no adapter types Hyperliquid actions"),
+    })
 }
 
 /// A request as an ordinary `http.request`, which the mandate's host and

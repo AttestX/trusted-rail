@@ -1,0 +1,22 @@
+[
+ {
+  "name": "buy btc",
+  "connectionId": "0xb2c52a2c3da723ee415cf4b41740dae1eefa8587e2051c1e6997d4c7304b3a13",
+  "privy": "{\"method\": \"eth_signTypedData_v4\", \"params\": {\"typed_data\": {\"domain\": {\"chainId\": 1337, \"name\": \"Exchange\", \"verifyingContract\": \"0x0000000000000000000000000000000000000000\", \"version\": \"1\"}, \"types\": {\"Agent\": [{\"name\": \"source\", \"type\": \"string\"}, {\"name\": \"connectionId\", \"type\": \"bytes32\"}], \"EIP712Domain\": [{\"name\": \"name\", \"type\": \"string\"}, {\"name\": \"version\", \"type\": \"string\"}, {\"name\": \"chainId\", \"type\": \"uint256\"}, {\"name\": \"verifyingContract\", \"type\": \"address\"}]}, \"primary_type\": \"Agent\", \"message\": {\"source\": \"a\", \"connectionId\": \"0xb2c52a2c3da723ee415cf4b41740dae1eefa8587e2051c1e6997d4c7304b3a13\"}}}, \"hyperliquid_action\": {\"action\": {\"type\": \"order\", \"orders\": [{\"a\": 0, \"b\": true, \"p\": \"97000.5\", \"s\": \"0.0125\", \"r\": false, \"t\": {\"limit\": {\"tif\": \"Gtc\"}}}], \"grouping\": \"na\"}, \"nonce\": 1732000000000, \"vaultAddress\": null}}"
+ },
+ {
+  "name": "sell eth ioc, vault",
+  "connectionId": "0xa930270fd2efec314d51fd9637c24a0cdc56936906433951315cf06c3f4dec7b",
+  "privy": "{\"method\": \"eth_signTypedData_v4\", \"params\": {\"typed_data\": {\"domain\": {\"chainId\": 1337, \"name\": \"Exchange\", \"verifyingContract\": \"0x0000000000000000000000000000000000000000\", \"version\": \"1\"}, \"types\": {\"Agent\": [{\"name\": \"source\", \"type\": \"string\"}, {\"name\": \"connectionId\", \"type\": \"bytes32\"}], \"EIP712Domain\": [{\"name\": \"name\", \"type\": \"string\"}, {\"name\": \"version\", \"type\": \"string\"}, {\"name\": \"chainId\", \"type\": \"uint256\"}, {\"name\": \"verifyingContract\", \"type\": \"address\"}]}, \"primary_type\": \"Agent\", \"message\": {\"source\": \"a\", \"connectionId\": \"0xa930270fd2efec314d51fd9637c24a0cdc56936906433951315cf06c3f4dec7b\"}}}, \"hyperliquid_action\": {\"action\": {\"type\": \"order\", \"orders\": [{\"a\": 1, \"b\": false, \"p\": \"3500\", \"s\": \"2\", \"r\": true, \"t\": {\"limit\": {\"tif\": \"Ioc\"}}}], \"grouping\": \"na\"}, \"nonce\": 1732000000001, \"vaultAddress\": \"0x1234567890abcdef1234567890abcdef12345678\"}}"
+ },
+ {
+  "name": "expires",
+  "connectionId": "0xfb498104dd4e0c199c7c25c596a8bd3fb5ea89b39f105c070a9939a4de36ff39",
+  "privy": "{\"method\": \"eth_signTypedData_v4\", \"params\": {\"typed_data\": {\"domain\": {\"chainId\": 1337, \"name\": \"Exchange\", \"verifyingContract\": \"0x0000000000000000000000000000000000000000\", \"version\": \"1\"}, \"types\": {\"Agent\": [{\"name\": \"source\", \"type\": \"string\"}, {\"name\": \"connectionId\", \"type\": \"bytes32\"}], \"EIP712Domain\": [{\"name\": \"name\", \"type\": \"string\"}, {\"name\": \"version\", \"type\": \"string\"}, {\"name\": \"chainId\", \"type\": \"uint256\"}, {\"name\": \"verifyingContract\", \"type\": \"address\"}]}, \"primary_type\": \"Agent\", \"message\": {\"source\": \"a\", \"connectionId\": \"0xfb498104dd4e0c199c7c25c596a8bd3fb5ea89b39f105c070a9939a4de36ff39\"}}}, \"hyperliquid_action\": {\"action\": {\"type\": \"order\", \"orders\": [{\"a\": 5, \"b\": true, \"p\": \"210.25\", \"s\": \"1.5\", \"r\": false, \"t\": {\"limit\": {\"tif\": \"Gtc\"}}}], \"grouping\": \"na\"}, \"nonce\": 1732000000002, \"vaultAddress\": null, \"expiresAfter\": 1732000060000}}"
+ },
+ {
+  "name": "cancel",
+  "connectionId": "0x4b289c18a320a65cd8a6fa0869540f3530144d469dede95fd33eb597e6cc8fa1",
+  "privy": "{\"method\": \"eth_signTypedData_v4\", \"params\": {\"typed_data\": {\"domain\": {\"chainId\": 1337, \"name\": \"Exchange\", \"verifyingContract\": \"0x0000000000000000000000000000000000000000\", \"version\": \"1\"}, \"types\": {\"Agent\": [{\"name\": \"source\", \"type\": \"string\"}, {\"name\": \"connectionId\", \"type\": \"bytes32\"}], \"EIP712Domain\": [{\"name\": \"name\", \"type\": \"string\"}, {\"name\": \"version\", \"type\": \"string\"}, {\"name\": \"chainId\", \"type\": \"uint256\"}, {\"name\": \"verifyingContract\", \"type\": \"address\"}]}, \"primary_type\": \"Agent\", \"message\": {\"source\": \"a\", \"connectionId\": \"0x4b289c18a320a65cd8a6fa0869540f3530144d469dede95fd33eb597e6cc8fa1\"}}}, \"hyperliquid_action\": {\"action\": {\"type\": \"cancel\", \"cancels\": [{\"a\": 0, \"o\": 91490942}]}, \"nonce\": 1732000000003, \"vaultAddress\": null}}"
+ }
+]

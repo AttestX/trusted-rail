@@ -14,6 +14,7 @@ adapters/
   exchange/binance.json       Binance spot orders in USDT and USDC (USD on Binance.US), cancels
   exchange/hyperliquid.json   Hyperliquid perpetual orders in USDC, cancels
   crypto/evm.json             signed EVM transactions, on any RPC host
+  crypto/privy.json           Privy: sign-in passes, other signing refused (Hyperliquid: below)
   payments/stripe.json        Stripe transfers, payouts, refunds
   payments/x402.json          x402 version 2 payments, on any host
   payments/x402-v1.json       x402 version 1, refused
@@ -127,6 +128,22 @@ builder fees, sub-accounts, multi-sig). `cancel`, `cancelByCloid` and `scheduleC
 `order.cancel`; `POST /info` (reads) passes. Testnet numbers its assets differently, so it is a
 sensitive host with no adapter. To regenerate the table:
 `curl -s -X POST https://api.hyperliquid.xyz/info -d '{"type":"meta"}'`, index → lower-case name.
+
+## Signing a Hyperliquid action
+
+Hyperliquid has an order signed as EIP-712 typed data (domain `Exchange`, chain 1337, type
+`Agent`) whose message holds only `connectionId`, a hash of the action. A signer (Privy,
+Turnkey, a local key) sees 32 opaque bytes. Once signed, an action can be sent from anywhere, so
+the signature, not the send, is where it is decided. A request to sign one, on any host and in
+Privy's form (`params.typed_data`) or a JSON-RPC `eth_signTypedData*` call, must carry the
+action it signs as `hyperliquid_action`: the `/exchange` body without its signature
+(`{action, nonce, vaultAddress, expiresAfter}`), with the action's keys in the order they were
+hashed. The action must hash to exactly the `connectionId` (the Python SDK's `action_hash`: the
+action in msgpack, the nonce, the vault, the expiry, keccak256), and it is then typed as if sent
+to `/exchange`, by `exchange/hyperliquid.json`. Refused: a request without the action (signing
+blind), one whose action is not the one signed, a key given twice, a testnet action, and
+Hyperliquid's user-signed actions (`HyperliquidSignTransaction`: withdrawals, transfers,
+approving agents). The `/exchange` request is checked again when it is sent.
 
 ## `exchange/binance.json`
 
