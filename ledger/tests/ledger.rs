@@ -5,7 +5,8 @@ use trusted_contracts::ExecutionIdentity;
 use trusted_rail::{
     action::Action,
     rego::{
-        decode_batch_public_values, engine_profile, evaluate_witness, policy_digest, state_root,
+        batch_record, decode_batch_public_values, engine_profile, evaluate_witness, policy_digest,
+        state_root,
     },
     Decision, Error, PolicyBundle,
 };
@@ -472,4 +473,47 @@ fn the_chain_is_proven_in_the_background_while_decisions_go_on() {
         assert_eq!(pair[0].0.next_state_root, pair[1].0.previous_state_root);
     }
     assert_eq!(ledger.head(&who).unwrap().proven, proven);
+}
+
+#[test]
+fn a_decision_is_found_with_the_proof_that_covers_it() {
+    let dir = private_dir();
+    let who = agent("trader");
+    let ledger = open(&dir);
+    ledger.activate(&who, &policy(100), Some(&fresh())).unwrap();
+    for (id, at) in [("a", 100), ("b", 101), ("c", 102)] {
+        spend(&ledger, &who, id, 30, at).unwrap();
+    }
+    assert!(ledger.find(&who, "nope").unwrap().is_none());
+    assert!(ledger.find(&agent("other"), "a").unwrap().is_none());
+
+    // Decided, not proven yet.
+    let found = ledger.find(&who, "b").unwrap().unwrap();
+    assert_eq!(found.seq, 1);
+    assert_eq!(found.record.action_id, "b");
+    assert!(found.proof.is_none());
+
+    for limit in [2, 10] {
+        let batch = ledger.next_batch(&who, limit).unwrap().unwrap();
+        let public = evaluate_witness(&batch.witness).unwrap();
+        ledger
+            .record_proof(&who, &batch.summary, &receipt(&public))
+            .unwrap();
+    }
+    for (id, seq, index, first) in [("a", 0, 0, 0), ("b", 1, 0, 0), ("c", 2, 1, 2)] {
+        let found = ledger.find(&who, id).unwrap().unwrap();
+        assert_eq!(found.seq, seq);
+        let proof = found.proof.unwrap();
+        assert_eq!((proof.index, proof.first), (index, first), "{id}");
+        // The run's records give the proven summary again, and hold this decision.
+        assert_eq!(batch_record(&proof.records).unwrap(), proof.summary);
+        assert_eq!(proof.records[(seq - first) as usize], found.record);
+        // The receipt is the one accepted for that summary.
+        assert!(Digest32
+            .verify(
+                &trusted_rail::rego::encode_batch_public_values(&proof.summary).unwrap(),
+                &proof.receipt
+            )
+            .is_ok());
+    }
 }
