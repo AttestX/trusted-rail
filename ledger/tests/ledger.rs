@@ -517,3 +517,39 @@ fn a_decision_is_found_with_the_proof_that_covers_it() {
             .is_ok());
     }
 }
+
+#[test]
+fn decisions_are_listed_newest_first_with_what_was_asked() {
+    let dir = private_dir();
+    let who = agent("trader");
+    let ledger = open(&dir);
+    ledger.activate(&who, &policy(100), Some(&fresh())).unwrap();
+    assert!(ledger.records(&who, None, 10).unwrap().is_empty());
+    for (id, amount, at) in [("a", 30, 100), ("b", 30, 101), ("c", 60, 102)] {
+        spend(&ledger, &who, id, amount, at).unwrap();
+    }
+    let all = ledger.records(&who, None, 10).unwrap();
+    let ids: Vec<_> = all
+        .iter()
+        .map(|r| (r.seq, r.record.action_id.as_str()))
+        .collect();
+    assert_eq!(ids, [(2, "c"), (1, "b"), (0, "a")]);
+    // What was asked comes with each, and the decision made.
+    assert_eq!(all[0].request.parameters["amount"], 60);
+    assert_eq!(all[0].request.operation, "trade.order");
+    assert_eq!(all[0].record.decision, Decision::Deny);
+    assert_eq!(all[2].record.decision, Decision::Allow);
+    // Pages: the last seq of one asks for the next.
+    let first = ledger.records(&who, None, 2).unwrap();
+    assert_eq!(first.len(), 2);
+    let next = ledger.records(&who, Some(first[1].seq), 2).unwrap();
+    assert_eq!(next.iter().map(|r| r.seq).collect::<Vec<_>>(), [0]);
+    assert!(ledger.records(&who, Some(0), 2).unwrap().is_empty());
+    // Another agent's are its own; a page is 1 to 200.
+    assert!(ledger
+        .records(&agent("other"), None, 10)
+        .unwrap()
+        .is_empty());
+    assert!(ledger.records(&who, None, 0).is_err());
+    assert!(ledger.records(&who, None, 201).is_err());
+}
