@@ -1,0 +1,10 @@
+{
+  "id": "x402-v1",
+  "category": "payments",
+  "summary": "An x402 version 1 payment (the X-PAYMENT header). It names no asset, so its amount cannot be compared with a limit: refused.",
+  "input": "header_json",
+  "header": "x-payment",
+  "actions": [
+    {"refuse": "an x402 version 1 payment names no asset"}
+  ]
+}

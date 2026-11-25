@@ -1,0 +1,74 @@
+{
+  "id": "evm",
+  "category": "crypto",
+  "summary": "A signed EVM transaction sent through any JSON-RPC endpoint: a native transfer, an ERC-20 transfer or approval, or any other contract call. Calls that sign or send out of sight are refused.",
+  "input": "jsonrpc_raw_transaction",
+  "methods": ["eth_sendRawTransaction", "eth_sendRawTransactionSync"],
+  "refuse_methods": [
+    "eth_sendTransaction", "eth_signTransaction", "eth_sign", "personal_sign",
+    "eth_signTypedData", "eth_signTypedData_v3", "eth_signTypedData_v4",
+    "eth_sendBundle", "eth_sendPrivateTransaction", "eth_sendRawTransactionConditional",
+    "wallet_sendCalls", "sendTransaction", "signTransaction"
+  ],
+  "functions": [
+    "transfer(address,uint256)",
+    "approve(address,uint256)",
+    "transferFrom(address,address,uint256)",
+    "increaseAllowance(address,uint256)",
+    "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
+    "setApprovalForAll(address,bool)",
+    "safeTransferFrom(address,address,uint256)"
+  ],
+  "unmatched": "refuse",
+  "actions": [
+    {
+      "when": {"fields": [{"at": "/input/data", "is": ["0x"]}]},
+      "operation": "token.transfer",
+      "resource": "recipient",
+      "parameters": {
+        "chain": {"at": "/input/chain_id", "as": "chain_name"},
+        "token": {"at": "/input/chain_id", "as": "native_symbol"},
+        "recipient": {"at": "/input/to"},
+        "amount_micro": {"at": "/input/value", "as": "micro", "decimals": 18},
+        "rail": {"const": "evm"}
+      }
+    },
+    {
+      "when": {"function": "transfer(address,uint256)", "fields": [{"at": "/input/value", "is": ["0"]}]},
+      "operation": "token.transfer",
+      "resource": "recipient",
+      "parameters": {
+        "chain": {"at": "/input/chain_id", "as": "chain_name"},
+        "token": {"as": "token_symbol", "token": {"chain": "/input/chain_id", "address": "/input/to"}},
+        "token_address": {"at": "/input/to"},
+        "recipient": {"at": "/input/args/0"},
+        "amount_micro": {"at": "/input/args/1", "as": "micro", "token": {"chain": "/input/chain_id", "address": "/input/to"}},
+        "rail": {"const": "evm"}
+      }
+    },
+    {
+      "when": {"function": "approve(address,uint256)", "fields": [{"at": "/input/value", "is": ["0"]}]},
+      "operation": "token.approve",
+      "resource": "spender",
+      "parameters": {
+        "chain": {"at": "/input/chain_id", "as": "chain_name"},
+        "token": {"as": "token_symbol", "token": {"chain": "/input/chain_id", "address": "/input/to"}},
+        "token_address": {"at": "/input/to"},
+        "spender": {"at": "/input/args/0"},
+        "amount_micro": {"at": "/input/args/1", "as": "micro", "or_zero": true, "token": {"chain": "/input/chain_id", "address": "/input/to"}},
+        "rail": {"const": "evm"}
+      }
+    },
+    {
+      "operation": "contract.call",
+      "resource": "to",
+      "parameters": {
+        "chain": {"at": "/input/chain_id", "as": "chain_name"},
+        "to": {"at": "/input/to"},
+        "function": {"at": "/input/selector", "as": "function"},
+        "value_micro": {"at": "/input/value", "as": "micro", "decimals": 18, "or_zero": true},
+        "rail": {"const": "evm"}
+      }
+    }
+  ]
+}

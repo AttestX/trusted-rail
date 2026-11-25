@@ -1,0 +1,34 @@
+{
+  "id": "x402",
+  "category": "payments",
+  "summary": "An x402 version 2 payment, on any host: the PAYMENT-SIGNATURE header holds the accepted terms and an EIP-3009 authorization. It is typed only when what is signed is exactly what was accepted.",
+  "input": "header_json",
+  "header": "payment-signature",
+  "unmatched": "refuse",
+  "actions": [
+    {
+      "when": {"fields": [{"at": "/input/x402Version", "is": [1]}]},
+      "refuse": "an x402 version 1 payment names no asset"
+    },
+    {
+      "when": {"fields": [{"at": "/input/accepted/scheme", "is": ["exact"]}]},
+      "require": [
+        {"same": ["/input/accepted/payTo", "/input/payload/authorization/to"], "case": "any",
+         "reason": "the signed payee differs from the accepted one"},
+        {"same": ["/input/accepted/amount", "/input/payload/authorization/value"],
+         "reason": "the signed amount differs from the accepted one"}
+      ],
+      "operation": "x402.pay",
+      "resource": "host",
+      "parameters": {
+        "host": {"at": "/request/host"},
+        "asset": {"as": "token_symbol", "token": {"chain": "/input/accepted/network", "address": "/input/accepted/asset"}},
+        "asset_address": {"at": "/input/accepted/asset", "as": "lower"},
+        "amount_micro": {"at": "/input/accepted/amount", "as": "micro", "token": {"chain": "/input/accepted/network", "address": "/input/accepted/asset"}},
+        "network": {"at": "/input/accepted/network"},
+        "pay_to": {"at": "/input/accepted/payTo", "as": "lower"},
+        "rail": {"const": "x402"}
+      }
+    }
+  ]
+}
