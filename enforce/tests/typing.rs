@@ -543,7 +543,7 @@ fn the_built_in_definitions_load_from_their_directory_too() {
 /// A new API is a JSON file: no Rust change.
 #[test]
 fn an_api_is_added_by_a_definition_alone() {
-    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let common = r#"{"categories": {"payments": {"name": "Payments"}}}"#;
     let paypal = r#"{
       "id": "paypal-payouts",
       "category": "payments",
@@ -607,7 +607,7 @@ fn an_api_is_added_by_a_definition_alone() {
 
 #[test]
 fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
-    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let common = r#"{"categories": {"payments": {"name": "Payments"}}}"#;
     let cases = [
         (
             r#"{"id": "a", "category": "payments", "input": "form", "actions": [{"refuse": "x"}]}"#,
@@ -661,7 +661,7 @@ fn a_definition_that_does_not_check_out_is_refused_when_loaded() {
 
 #[test]
 fn decimal_text_amounts_round_up_to_millionths() {
-    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let common = r#"{"categories": {"payments": {"name": "Payments"}}}"#;
     let adapter = r#"{"id": "ex", "category": "payments", "input": "json", "hosts": ["ex.example"], "actions": [{
         "operation": "payment", "resource": "to",
         "parameters": {"to": {"const": "x"}, "amount_micro": {"at": "/input/amount", "as": "micro", "decimals": 0}}}]}"#;
@@ -704,10 +704,9 @@ fn hosts_and_adapters_have_categories() {
         .with_sensitive_hosts("casino", &["x.example"])
         .is_err());
     // An adapter or host in an unknown category is refused when loaded.
-    let common = r#"{"categories": {"payments": "Payments"}}"#;
+    let common = r#"{"categories": {"payments": {"name": "Payments"}}}"#;
     let odd = r#"{"id": "odd", "category": "casino", "input": "json", "hosts": ["x.example"], "actions": []}"#;
     assert!(Adapters::load(common, &[odd]).is_err());
-    let common =
-        r#"{"categories": {"payments": "Payments"}, "sensitive_hosts": {"casino": ["x.example"]}}"#;
+    let common = r#"{"categories": {"payments": {"name": "Payments"}}, "sensitive_hosts": {"casino": ["x.example"]}}"#;
     assert!(Adapters::load(common, &[]).is_err());
 }

@@ -9,14 +9,16 @@ here, an entry in `BUILTIN` (`src/lib.rs`) if it ships built in, and a test.
 
 | Field | Meaning |
 |---|---|
-| `categories` | Category id → name: what kind of service an adapter or host is. The ids are shared with ClawUp's mandate templates |
+| `categories` | Category id → `{name, isic}`: what kind of service an adapter or host is, and the nearest [ISIC Rev.5](https://unstats.un.org/unsd/classifications/Econ/isic) codes (the UN industry classification), so others can map ours. The ids are shared with ClawUp's mandate templates |
 | `sensitive_hosts` | Category → hosts that can move money or act for the owner. A write to one that no adapter types is refused, naming the category. An adapter's own `hosts` count too, in its category |
 | `chains` | `{id, name, native}`: chain ids as mandates name them, and each chain's native token |
 | `tokens` | `{chain, address, symbol, decimals}`: tokens whose amounts can be put in millionths |
 
 The categories: `crypto` (on-chain), `exchange` (crypto exchanges), `broker`, `bank`,
 `payments`, `commerce`, `ads`, `content`, `comms`, `cloud`, and `security` for what applies to
-every category.
+every category. ISIC has no class for crypto-assets or payment processing, so `crypto` and
+`payments` take the nearest, 6619 (other activities auxiliary to financial services);
+`security` has none.
 
 ## An adapter
 

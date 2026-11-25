@@ -103,7 +103,7 @@ struct Loaded {
 
 /// A set of loaded definitions.
 pub struct Adapters {
-    categories: BTreeMap<String, String>,
+    categories: BTreeMap<String, spec::Category>,
     /// Host → category.
     sensitive_hosts: BTreeMap<String, String>,
     chains: Vec<spec::Chain>,
@@ -132,6 +132,15 @@ impl Adapters {
         }
         if common.categories.is_empty() {
             return Err("common: no categories".into());
+        }
+        for (id, category) in &common.categories {
+            let code = |c: &String| {
+                (c.len() == 1 && c.bytes().all(|b| b.is_ascii_uppercase()))
+                    || ((2..=4).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit()))
+            };
+            if !valid(&category.name) || !category.isic.iter().all(code) {
+                return Err(format!("common: category {id} needs a name and ISIC codes"));
+            }
         }
         let mut sensitive_hosts = BTreeMap::new();
         for (category, hosts) in &common.sensitive_hosts {
@@ -281,11 +290,11 @@ impl Adapters {
 
     /// A category's name, from its id.
     pub fn category_name(&self, id: &str) -> Option<&str> {
-        self.categories.get(id).map(String::as_str)
+        self.categories.get(id).map(|c| c.name.as_str())
     }
 
-    /// The categories, id → name.
-    pub fn categories(&self) -> &BTreeMap<String, String> {
+    /// The categories, id → name and ISIC codes.
+    pub fn categories(&self) -> &BTreeMap<String, spec::Category> {
         &self.categories
     }
 

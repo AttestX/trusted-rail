@@ -1,16 +1,16 @@
 {
   "categories": {
-    "crypto": "Crypto, on-chain",
-    "exchange": "Crypto exchanges",
-    "broker": "Brokers",
-    "bank": "Banking",
-    "payments": "Payments",
-    "commerce": "E-commerce",
-    "ads": "Advertising",
-    "content": "Content and publishing",
-    "comms": "Communications",
-    "cloud": "Cloud and SaaS",
-    "security": "Security"
+    "crypto": {"name": "Crypto, on-chain", "isic": ["6619"]},
+    "exchange": {"name": "Crypto exchanges", "isic": ["6611", "6612"]},
+    "broker": {"name": "Brokers", "isic": ["6612"]},
+    "bank": {"name": "Banking", "isic": ["641"]},
+    "payments": {"name": "Payments", "isic": ["6619"]},
+    "commerce": {"name": "E-commerce", "isic": ["47", "4790", "5232", "5540", "79"]},
+    "ads": {"name": "Advertising", "isic": ["7310"]},
+    "content": {"name": "Content and publishing", "isic": ["58", "59", "60"]},
+    "comms": {"name": "Communications", "isic": ["61"]},
+    "cloud": {"name": "Cloud and SaaS", "isic": ["6310"]},
+    "security": {"name": "Security", "isic": []}
   },
   "sensitive_hosts": {
     "payments": [

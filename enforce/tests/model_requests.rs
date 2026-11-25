@@ -226,7 +226,7 @@ fn what_cannot_be_read_is_refused() {
 
 #[test]
 fn the_rules_are_checked_when_loaded() {
-    let common = r#"{"categories":{"security":"Security"}}"#;
+    let common = r#"{"categories":{"security":{"name":"Security"}}}"#;
     let base = Adapters::load(common, &[]).unwrap();
     let loose = r#"{"model_hosts":[],"endpoints":[],"shapes":[],"refuse":[{"at":"/tools/*/type","reason":"x"}]}"#;
     assert!(base.with_model_rules(loose).is_err());

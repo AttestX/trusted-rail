@@ -12,10 +12,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Common {
-    /// Category id → its name: what kind of service an adapter or host is
-    /// (`crypto`, `exchange`, `payments`, ...). ClawUp's mandate templates use
-    /// the same ids.
-    pub categories: BTreeMap<String, String>,
+    /// Category id → what kind of service an adapter or host is (`crypto`,
+    /// `exchange`, `payments`, ...). ClawUp's mandate templates use the same ids.
+    pub categories: BTreeMap<String, Category>,
     /// Category → hosts that can move money or act for the owner: a write to
     /// one that no adapter types is refused.
     #[serde(default)]
@@ -24,6 +23,17 @@ pub struct Common {
     pub chains: Vec<Chain>,
     #[serde(default)]
     pub tokens: Vec<Token>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Category {
+    pub name: String,
+    /// The nearest ISIC Rev.5 codes (UN industry classification): a section
+    /// letter, or a division, group or class of 2 to 4 digits. Empty for a
+    /// category that applies to every industry.
+    #[serde(default)]
+    pub isic: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
