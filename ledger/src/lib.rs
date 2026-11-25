@@ -83,6 +83,31 @@ pub struct Batch {
     pub witness: Vec<u8>,
 }
 
+/// One decision and where it sits in its execution's chain.
+#[derive(Debug, Clone)]
+pub struct Found {
+    /// Its place in the chain, from 0.
+    pub seq: u64,
+    pub record: DecisionRecord,
+    /// The accepted proof that covers it, once there is one.
+    pub proof: Option<Covering>,
+}
+
+/// An accepted proof and the run of records it covers.
+#[derive(Debug, Clone)]
+pub struct Covering {
+    /// The proof's place among the chain's proofs, from 0.
+    pub index: u64,
+    /// The `seq` of the run's first record.
+    pub first: u64,
+    pub summary: BatchRecord,
+    pub receipt: Vec<u8>,
+    /// The run, in order. They give `summary.records_sha256` again
+    /// (`rego::batch_record`), so a holder of one signed record can check it
+    /// is in the proven run.
+    pub records: Vec<DecisionRecord>,
+}
+
 pub struct Ledger {
     connection: Mutex<Connection>,
     verifier: Arc<dyn ProofVerifier>,
@@ -465,6 +490,68 @@ impl Ledger {
         let receipt = prover.prove(&batch.witness, &public_values)?;
         self.record_proof(execution, &batch.summary, &receipt)?;
         Ok(Some(batch.summary))
+    }
+
+    /// The decision made for `action_id`, and the proof covering it once one
+    /// is accepted. `None` when the execution decided no such action.
+    pub fn find(&self, execution: &ExecutionIdentity, action_id: &str) -> Result<Option<Found>> {
+        let key = execution_key(execution)?;
+        let connection = self.connection.lock().map_err(|_| Error::Unavailable)?;
+        let Some((seq, record)) = db(connection
+            .query_row(
+                "SELECT seq,record FROM records WHERE execution=?1 AND action=?2",
+                params![key, action_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional())?
+        else {
+            return Ok(None);
+        };
+        let covering = db(connection
+            .query_row(
+                "SELECT first,summary,receipt,
+                   (SELECT COUNT(*) FROM proofs earlier WHERE earlier.execution=?1 AND earlier.first<p.first)
+                 FROM proofs p WHERE execution=?1 AND first<=?2 ORDER BY first DESC LIMIT 1",
+                params![key, seq],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional())?;
+        let mut proof = None;
+        if let Some((first, summary, receipt, index)) = covering {
+            let summary: BatchRecord = stored(&summary)?;
+            if seq < first + i64::from(summary.count) {
+                let mut statement = db(connection.prepare(
+                    "SELECT record FROM records WHERE execution=?1 AND seq>=?2 ORDER BY seq LIMIT ?3",
+                ))?;
+                let records = db(db(statement
+                    .query_map(params![key, first, summary.count], |row| {
+                        row.get::<_, String>(0)
+                    }))?
+                .collect::<std::result::Result<Vec<_>, _>>())?
+                .iter()
+                .map(|record| stored::<DecisionRecord>(record))
+                .collect::<Result<Vec<_>>>()?;
+                proof = Some(Covering {
+                    index: u64::try_from(index).map_err(|_| Error::Unavailable)?,
+                    first: u64::try_from(first).map_err(|_| Error::Unavailable)?,
+                    summary,
+                    receipt,
+                    records,
+                });
+            }
+        }
+        Ok(Some(Found {
+            seq: u64::try_from(seq).map_err(|_| Error::Unavailable)?,
+            record: stored(&record)?,
+            proof,
+        }))
     }
 
     /// Every accepted proof in chain order, with its receipt, for a verifier
