@@ -85,6 +85,10 @@ pub struct Adapter {
     /// What a request it covers becomes when no action matches it.
     #[serde(default)]
     pub unmatched: Unmatched,
+    /// Name → (key → value), for `"as": "lookup"`: names an API gives by
+    /// number, such as an exchange's asset indexes.
+    #[serde(default)]
+    pub tables: BTreeMap<String, BTreeMap<String, String>>,
     /// Tried in order; the first whose `when` holds decides.
     pub actions: Vec<Action>,
 }
@@ -134,6 +138,10 @@ pub struct Action {
     /// Refuse a request this matches, for this reason.
     #[serde(default)]
     pub refuse: Option<String>,
+    /// Let a request this matches through as an ordinary request: a write
+    /// that is a read in all but its method, such as a query sent by POST.
+    #[serde(default)]
+    pub pass: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -156,7 +164,12 @@ pub struct When {
 #[serde(deny_unknown_fields)]
 pub struct Is {
     pub at: String,
+    /// The value is one of these. Or:
+    #[serde(default)]
     pub is: Vec<Value>,
+    /// The text matches this regular expression, whole.
+    #[serde(default)]
+    pub matches: Option<String>,
     #[serde(default)]
     pub case: Case,
 }
@@ -215,6 +228,9 @@ pub struct Source {
     /// For `micro` and `token_symbol`: where the token is named.
     #[serde(default)]
     pub token: Option<TokenAt>,
+    /// For `lookup`: the name of one of the adapter's `tables`.
+    #[serde(default)]
+    pub table: Option<String>,
     /// For `micro`: multiply by the decimal at this pointer (a quantity
     /// times a price), rounding the product up.
     #[serde(default)]
@@ -252,6 +268,9 @@ pub enum Convert {
     NativeSymbol,
     /// A selector as the name of one of `functions`, or as itself.
     Function,
+    /// The value's text looked up in the adapter's table named `table`;
+    /// refused if absent.
+    Lookup,
 }
 
 /// Checks on requests to model APIs (`adapters/model-requests.json`).
