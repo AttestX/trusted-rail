@@ -150,18 +150,24 @@ impl Ledger {
         if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
             return Err(Error::InvalidInput);
         }
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|_| Error::Unavailable)?;
-        let meta = file.metadata().map_err(|_| Error::Unavailable)?;
-        if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
-            return Err(Error::InvalidInput);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+                .map_err(|_| Error::Unavailable)?;
+            let meta = file.metadata().map_err(|_| Error::Unavailable)?;
+            if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+                return Err(Error::InvalidInput);
+            }
+            // Closed here, before SQLite opens the file. Closing any handle on a
+            // file drops every lock this process holds on it, SQLite's included;
+            // another process would then take the database for unused and
+            // remove the write-ahead log under a live connection.
         }
         let connection = db(Connection::open(path))?;
         db(connection.busy_timeout(std::time::Duration::from_secs(5)))?;
